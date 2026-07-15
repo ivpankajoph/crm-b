@@ -22,7 +22,7 @@ const app = express();
 app.use(helmet());
 app.use(
   cors({
-    origin: true, // Allow any origin in dev
+    origin: ['http://localhost:5173', 'http://localhost:5174', 'https://crm.sellerslogin.com', 'http://crm.sellerslogin.com'],
     credentials: true,
   })
 );
