@@ -59,11 +59,23 @@ const companySchema = new mongoose.Schema({
   followType: {
     type: String,
   },
-  createdBy: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true,
-  }
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  leadSource: { type: String, default: 'Direct' },
+  assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  leadStatus: {
+    type: String,
+    enum: ['New', 'Interested', 'Not Interested', 'Prospective', 'Committed', 'Converted'],
+    default: 'New'
+  },
+  comments: [{
+    text: { type: String, required: true },
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    createdAt: { type: Date, default: Date.now },
+    attachment: {
+      url: String,
+      fileType: String
+    }
+  }]
 }, {
   timestamps: true,
 });

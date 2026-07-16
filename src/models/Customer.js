@@ -31,6 +31,37 @@ const customerSchema = new mongoose.Schema({
     ref: 'User',
     required: true,
   },
+  assignedTo: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+  },
+  leadStatus: {
+    type: String,
+    enum: ['New', 'Interested', 'Not Interested', 'Prospective', 'Committed', 'Converted'],
+    default: 'New'
+  },
+  leadSource: {
+    type: String,
+    default: 'Direct'
+  },
+  comments: [{
+    text: {
+      type: String,
+      required: true,
+    },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now
+    },
+    attachment: {
+      url: String,
+      fileType: String
+    }
+  }]
 }, {
   timestamps: true,
 });

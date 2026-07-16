@@ -35,10 +35,31 @@ const userSchema = new mongoose.Schema(
 
 
 
+import bcrypt from 'bcrypt';
+
 // Method to compare passwords
 userSchema.methods.matchPassword = async function (enteredPassword) {
+  // If stored password is a hash
+  if (this.password.startsWith('$2b$') || this.password.startsWith('$2a$')) {
+    return await bcrypt.compare(enteredPassword, this.password);
+  }
+  // Fallback to plaintext comparison
   return enteredPassword === this.password;
 };
+
+// Encrypt password before saving
+userSchema.pre('save', async function (next) {
+  if (!this.isModified('password')) {
+    return next();
+  }
+  
+  // Hash the password if it isn't already a bcrypt hash
+  if (!this.password.startsWith('$2b$') && !this.password.startsWith('$2a$')) {
+    const salt = await bcrypt.genSalt(10);
+    this.password = await bcrypt.hash(this.password, salt);
+  }
+  next();
+});
 
 // Return password when returning user object (as requested)
 userSchema.methods.toJSON = function () {
