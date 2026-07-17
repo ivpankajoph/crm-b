@@ -7,19 +7,44 @@ import Company from '../models/Company.js';
 // @access  Private
 export const getDashboardStats = async (req, res, next) => {
   try {
-    const { startDate, endDate } = req.query;
+    const { period = 'today', month, year } = req.query;
     let matchStage = {};
     if (req.user.role !== 'admin') {
       matchStage.createdBy = req.user._id;
     }
 
-    const start = startDate ? new Date(startDate) : new Date();
-    start.setHours(0, 0, 0, 0);
+    const now = new Date();
+    let start = new Date(now);
+    let end = new Date(now);
 
-    const end = endDate ? new Date(endDate) : new Date();
-    end.setHours(23, 59, 59, 999);
+    const applyDateRange = (startDate, endDate) => {
+      if (!startDate || !endDate || Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+        return false;
+      }
+      startDate.setHours(0, 0, 0, 0);
+      endDate.setHours(23, 59, 59, 999);
+      matchStage.createdAt = { $gte: startDate, $lte: endDate };
+      return true;
+    };
 
-    matchStage.updatedAt = { $gte: start, $lte: end };
+    if (period === 'today') {
+      applyDateRange(start, end);
+    } else if (period === 'month') {
+      if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+        start.setDate(1);
+        end.setMonth(end.getMonth() + 1, 0);
+      } else {
+        const [selectedYear, selectedMonth] = month.split('-').map(Number);
+        start = new Date(selectedYear, selectedMonth - 1, 1);
+        end = new Date(selectedYear, selectedMonth, 0);
+      }
+      applyDateRange(start, end);
+    } else if (period === 'year') {
+      const selectedYear = Number(year) || now.getFullYear();
+      start = new Date(selectedYear, 0, 1);
+      end = new Date(selectedYear, 11, 31);
+      applyDateRange(start, end);
+    }
 
     const [customerStats, companyStats] = await Promise.all([
       Customer.aggregate([

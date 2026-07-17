@@ -37,7 +37,7 @@ const customerSchema = new mongoose.Schema({
   },
   leadStatus: {
     type: String,
-    enum: ['New', 'Interested', 'Not Interested', 'Prospective', 'Committed', 'Converted'],
+    enum: ['New', 'Interested', 'Not Interested', 'Prospective', 'Committed', 'Converted', 'Follow Up'],
     default: 'New'
   },
   leadSource: {

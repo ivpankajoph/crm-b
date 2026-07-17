@@ -13,9 +13,9 @@ import roleRoutes from './routes/roleRoutes.js';
 import dashboardRoutes from './routes/dashboardRoutes.js';
 import userRoutes from './routes/userRoutes.js';
 import companyRoutes from './routes/companyRoutes.js';
+import employeeRoutes from './routes/employeeRoutes.js';
 import leadRoutes from './routes/leadRoutes.js';
 import customerRoutes from './routes/customerRoutes.js';
-import contactRoutes from './routes/contactRoutes.js';
 import eventRoutes from './routes/eventRoutes.js';
 import noteRoutes from './routes/noteRoutes.js';
 import taskRoutes from './routes/taskRoutes.js';
@@ -50,9 +50,10 @@ if (process.env.NODE_ENV !== 'production') {
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
+  max: 100000, // Limit each IP to 100 requests per `window` (here, per 15 minutes)
   message: 'Too many requests from this IP, please try again after 15 minutes',
 });
+
 app.use('/api', limiter);
 
 // Routes
@@ -61,9 +62,9 @@ app.use('/api/roles', roleRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/companies', companyRoutes);
+app.use('/api/employees', employeeRoutes);
 app.use('/api/leads', leadRoutes);
 app.use('/api/customers', customerRoutes);
-app.use('/api/contacts', contactRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/notes', noteRoutes);
 app.use('/api/tasks', taskRoutes);

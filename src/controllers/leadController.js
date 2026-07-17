@@ -29,36 +29,50 @@ export const getLeads = async (req, res, next) => {
 // @access  Private
 export const getLeadStats = async (req, res, next) => {
   try {
+    const { period = 'today', startDate: startDateParam, endDate: endDateParam, month, year } = req.query;
     let matchStage = {};
     if (req.user.role !== 'admin') {
       matchStage.createdBy = req.user._id;
     }
 
-    const stats = await Lead.aggregate([
-      { $match: matchStage },
-      {
-        $group: {
-          _id: null,
-          totalLeads: { $sum: 1 },
-          interested: { 
-            $sum: { $cond: [{ $eq: ["$status", "Interested"] }, 1, 0] } 
-          },
-          notInterested: { 
-            $sum: { $cond: [{ $eq: ["$status", "Not Interested"] }, 1, 0] } 
-          },
-          prospective: { 
-            $sum: { $cond: [{ $eq: ["$status", "Prospective"] }, 1, 0] } 
-          },
-          committed: { 
-            $sum: { $cond: [{ $eq: ["$status", "Committed"] }, 1, 0] } 
-          },
-          converted: { 
-            $sum: { $cond: [{ $eq: ["$status", "Converted"] }, 1, 0] } 
-          },
-          totalMeetings: { $sum: "$meetingsCount" }
-        }
+    const now = new Date();
+    let startDate = new Date(now);
+    let endDate = new Date(now);
+
+    const applyDateRange = (start, end) => {
+      if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        return false;
       }
-    ]);
+      start.setHours(0, 0, 0, 0);
+      end.setHours(23, 59, 59, 999);
+      matchStage.createdAt = { $gte: start, $lte: end };
+      return true;
+    };
+
+    if (period === 'today') {
+      applyDateRange(startDate, endDate);
+    } else if (period === 'date') {
+      if (!startDateParam || !endDateParam) {
+        return errorResponse(res, 400, 'Start date and end date are required');
+      }
+      applyDateRange(new Date(startDateParam), new Date(endDateParam));
+    } else if (period === 'month') {
+      if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+        return errorResponse(res, 400, 'Month is required');
+      }
+      const [selectedYear, selectedMonth] = month.split('-').map(Number);
+      startDate = new Date(selectedYear, selectedMonth - 1, 1);
+      endDate = new Date(selectedYear, selectedMonth, 0);
+      applyDateRange(startDate, endDate);
+    } else if (period === 'year') {
+      const selectedYear = Number(year);
+      if (!selectedYear || selectedYear < 1900) {
+        return errorResponse(res, 400, 'Year is required');
+      }
+      startDate = new Date(selectedYear, 0, 1);
+      endDate = new Date(selectedYear, 11, 31);
+      applyDateRange(startDate, endDate);
+    }
 
     const defaultStats = {
       totalLeads: 0,
@@ -67,15 +81,46 @@ export const getLeadStats = async (req, res, next) => {
       prospective: 0,
       committed: 0,
       converted: 0,
-      totalMeetings: 0
+      followUp: 0
     };
 
-    let resultStats = stats.length > 0 ? stats[0] : defaultStats;
+    let resultStats = { ...defaultStats };
 
-    // Override totalLeads with Customer + Company count
-    const customerCount = await Customer.countDocuments(matchStage);
-    const companyCount = await Company.countDocuments(matchStage);
+    const countByStatus = async (status) => {
+      const [customerCount, companyCount] = await Promise.all([
+        Customer.countDocuments({ ...matchStage, leadStatus: status }),
+        Company.countDocuments({ ...matchStage, leadStatus: status }),
+      ]);
+      return customerCount + companyCount;
+    };
+
+    const [
+      customerCount,
+      companyCount,
+      interested,
+      notInterested,
+      prospective,
+      committed,
+      converted,
+      followUp
+    ] = await Promise.all([
+      Customer.countDocuments(matchStage),
+      Company.countDocuments(matchStage),
+      countByStatus('Interested'),
+      countByStatus('Not Interested'),
+      countByStatus('Prospective'),
+      countByStatus('Committed'),
+      countByStatus('Converted'),
+      countByStatus('Follow Up'),
+    ]);
+
     resultStats.totalLeads = customerCount + companyCount;
+    resultStats.interested = interested;
+    resultStats.notInterested = notInterested;
+    resultStats.prospective = prospective;
+    resultStats.committed = committed;
+    resultStats.converted = converted;
+    resultStats.followUp = followUp;
 
     return successResponse(res, 200, 'Stats fetched', resultStats);
   } catch (error) {
@@ -109,6 +154,7 @@ export const getAllCombinedLeads = async (req, res, next) => {
         createdBy: c.createdBy?.name || 'System',
         assignedTo: c.assignedTo?.name || '---',
         commentsCount: c.comments?.length || 0,
+        followTypeDate: null,
         createdAt: c.createdAt
       })),
       ...companies.map(c => ({
@@ -121,6 +167,7 @@ export const getAllCombinedLeads = async (req, res, next) => {
         createdBy: c.createdBy?.name || 'System',
         assignedTo: c.assignedTo?.name || '---',
         commentsCount: c.comments?.length || 0,
+        followTypeDate: c.followTypeDate,
         createdAt: c.createdAt
       }))
     ];
@@ -203,6 +250,7 @@ export const updateLeadStatus = async (req, res, next) => {
     next(error);
   }
 };
+
 
 // @desc    Add comment to lead (unified)
 // @route   POST /api/leads/unified/:type/:id/comment

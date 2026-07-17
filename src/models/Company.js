@@ -64,7 +64,7 @@ const companySchema = new mongoose.Schema({
   assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   leadStatus: {
     type: String,
-    enum: ['New', 'Interested', 'Not Interested', 'Prospective', 'Committed', 'Converted'],
+    enum: ['New', 'Interested', 'Not Interested', 'Prospective', 'Committed', 'Converted', 'Follow Up'],
     default: 'New'
   },
   comments: [{

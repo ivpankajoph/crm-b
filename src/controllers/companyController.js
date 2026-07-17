@@ -29,7 +29,8 @@ export const createCompany = async (req, res, next) => {
     const { 
       companyName, customerName, customerDesignation, email1, email2, 
       mobileNo, phoneNo, products, businessType, address1, address2, 
-      city, state, country, website1, website2, followTypeDate, followType 
+      city, state, country, website1, website2, followTypeDate, followType,
+      leadStatus
     } = req.body;
 
     const company = await Company.create({
@@ -51,6 +52,7 @@ export const createCompany = async (req, res, next) => {
       website2,
       followTypeDate,
       followType,
+      leadStatus,
       createdBy: req.user._id // Taken from authMiddleware
     });
 
@@ -101,13 +103,15 @@ export const updateCompany = async (req, res, next) => {
     const { 
       companyName, customerName, customerDesignation, email1, email2, 
       mobileNo, phoneNo, products, businessType, address1, address2, 
-      city, state, country, website1, website2, followTypeDate, followType 
+      city, state, country, website1, website2, followTypeDate, followType,
+      leadStatus
     } = req.body;
 
     company = await Company.findByIdAndUpdate(req.params.id, {
       companyName, customerName, customerDesignation, email1, email2, 
       mobileNo, phoneNo, products, businessType, address1, address2, 
-      city, state, country, website1, website2, followTypeDate, followType 
+      city, state, country, website1, website2, followTypeDate, followType,
+      leadStatus
     }, { new: true, runValidators: true }).populate('createdBy', 'name role email');
 
     return successResponse(res, 200, 'Company updated successfully', company);
