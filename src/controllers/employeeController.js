@@ -59,10 +59,30 @@ export const getEmployeeById = async (req, res, next) => {
 
 export const createEmployee = async (req, res, next) => {
   try {
-    const existingEmployee = await Employee.findOne({ email: req.body.email });
+    const { email, firstName, lastName, password } = req.body;
+    
+    if (!password) {
+      return errorResponse(res, 400, 'Password is required to create a login account for the employee');
+    }
+
+    const existingEmployee = await Employee.findOne({ email });
     if (existingEmployee) {
       return errorResponse(res, 400, 'Employee with this email already exists');
     }
+
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return errorResponse(res, 400, 'User with this email already exists');
+    }
+
+    // Create User Login Account
+    const user = await User.create({
+      name: `${firstName} ${lastName}`.trim(),
+      email,
+      password,
+      role: 'employee',
+      isActive: true
+    });
 
     const employee = await Employee.create({
       ...buildEmployeePayload(req.body),
@@ -70,7 +90,7 @@ export const createEmployee = async (req, res, next) => {
     });
 
     const populatedEmployee = await Employee.findById(employee._id).populate(populateFields);
-    return successResponse(res, 201, 'Employee created successfully', populatedEmployee);
+    return successResponse(res, 201, 'Employee and User created successfully', populatedEmployee);
   } catch (error) {
     next(error);
   }
@@ -128,6 +148,23 @@ export const getTeamLeaders = async (req, res, next) => {
       .sort({ name: 1 });
 
     return successResponse(res, 200, 'Team leaders fetched successfully', leaders);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get current user's employee profile
+// @route   GET /api/employees/me
+// @access  Private
+export const getMyEmployeeProfile = async (req, res, next) => {
+  try {
+    const employee = await Employee.findOne({ email: req.user.email }).populate(populateFields);
+    
+    if (!employee) {
+      return errorResponse(res, 404, 'Employee profile not found for this user');
+    }
+
+    return successResponse(res, 200, 'Employee profile fetched successfully', employee);
   } catch (error) {
     next(error);
   }

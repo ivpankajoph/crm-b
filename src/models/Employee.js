@@ -111,22 +111,44 @@ const employeeSchema = new mongoose.Schema(
   }
 );
 
-employeeSchema.pre('validate', async function (next) {
-  if (this.employeeId) return next();
+employeeSchema.pre('validate', async function () {
+  if (this.employeeId) return;
+
+  const setting = await mongoose.model('Setting').findOne().lean();
+  let companyName = setting?.companyName;
+  if (!companyName || companyName.trim() === '') {
+    companyName = setting?.systemName || 'Employee';
+  }
+  
+  let prefix = companyName
+    .split(/\s+/)
+    .map(word => word[0])
+    .join('')
+    .toUpperCase()
+    .replace(/[^A-Z]/g, '');
+
+  if (!prefix) {
+    prefix = 'EMP';
+  } else if (prefix.length > 4) {
+    prefix = prefix.substring(0, 4);
+  }
 
   const latestEmployee = await mongoose
     .model('Employee')
-    .findOne({ employeeId: /^EMP-\d+$/ })
+    .findOne()
     .sort({ createdAt: -1 })
     .select('employeeId')
     .lean();
 
-  const latestNumber = latestEmployee?.employeeId
-    ? Number(latestEmployee.employeeId.replace('EMP-', ''))
-    : 0;
+  let latestNumber = 0;
+  if (latestEmployee && latestEmployee.employeeId) {
+    const match = latestEmployee.employeeId.match(/\d+$/);
+    if (match) {
+      latestNumber = Number(match[0]);
+    }
+  }
 
-  this.employeeId = `EMP-${String(latestNumber + 1).padStart(4, '0')}`;
-  next();
+  this.employeeId = `${prefix}-${String(latestNumber + 1).padStart(4, '0')}`;
 });
 
 const Employee = mongoose.model('Employee', employeeSchema);

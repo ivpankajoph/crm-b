@@ -6,12 +6,14 @@ import {
   updateEmployee,
   deleteEmployee,
   getTeamLeaders,
+  getMyEmployeeProfile
 } from '../controllers/employeeController.js';
 import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
 router.get('/team-leaders', protect, getTeamLeaders);
+router.get('/me', protect, getMyEmployeeProfile);
 
 router.route('/')
   .get(protect, getEmployees)

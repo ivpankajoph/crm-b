@@ -262,7 +262,7 @@ export const addLeadComment = async (req, res, next) => {
     
     let attachment;
     if (req.file) {
-      const fileUrl = `${req.protocol}://${req.get('host')}/uploads/${req.file.filename}`;
+      const fileUrl = `/uploads/${req.file.filename}`;
       attachment = {
         url: fileUrl,
         fileType: req.file.mimetype.startsWith('video/') ? 'video' : 'image'

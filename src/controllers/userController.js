@@ -1,5 +1,6 @@
 import User from '../models/User.js';
 import Role from '../models/Role.js';
+import Employee from '../models/Employee.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 
 // @desc    Get all users
@@ -56,6 +57,22 @@ export const createUser = async (req, res, next) => {
     // If the role exists in the Role collection, increment its usersCount
     await Role.findOneAndUpdate({ name: role }, { $inc: { usersCount: 1 } });
 
+    // Sync to Employee collection
+    const nameParts = name.split(' ');
+    const firstName = nameParts[0];
+    const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : 'Doe';
+    
+    await Employee.create({
+      firstName,
+      lastName,
+      email,
+      phone: 'N/A',
+      designation: role || 'Employee',
+      department: 'N/A',
+      joiningDate: new Date(),
+      createdBy: req.user._id
+    });
+
     const userObj = user.toJSON(); // toJSON removes password
 
     return successResponse(res, 201, 'User created successfully', userObj);
@@ -85,6 +102,7 @@ export const updateUser = async (req, res, next) => {
     }
 
     const oldRole = user.role;
+    const oldEmail = user.email;
 
     user.name = name || user.name;
     user.email = email || user.email;
@@ -99,6 +117,16 @@ export const updateUser = async (req, res, next) => {
     }
 
     await user.save();
+
+    // Sync updates to Employee
+    const nameParts = user.name.split(' ');
+    const firstName = nameParts[0];
+    const lastName = nameParts.length > 1 ? nameParts.slice(1).join(' ') : 'Doe';
+    
+    await Employee.findOneAndUpdate(
+      { email: oldEmail }, 
+      { firstName, lastName, email: user.email, designation: user.role }
+    );
 
     const userObj = user.toJSON();
 
@@ -121,6 +149,9 @@ export const deleteUser = async (req, res, next) => {
     
     // Decrease usersCount in Role
     await Role.findOneAndUpdate({ name: user.role }, { $inc: { usersCount: -1 } });
+
+    // Also delete the linked employee if one exists (by email)
+    await Employee.findOneAndDelete({ email: user.email });
 
     await User.findByIdAndDelete(req.params.id);
 
