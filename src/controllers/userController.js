@@ -2,6 +2,8 @@ import User from '../models/User.js';
 import Role from '../models/Role.js';
 import Employee from '../models/Employee.js';
 import { successResponse, errorResponse } from '../utils/response.js';
+import { isAdminUser } from '../utils/hierarchy.js';
+import { logActivity } from '../utils/activity.js';
 
 // @desc    Get all users
 // @route   GET /api/users
@@ -28,7 +30,10 @@ export const getUsers = async (req, res, next) => {
       }
     }
 
-    const users = await User.find(filter).sort({ createdAt: -1 });
+    const users = await User.find(filter)
+      .populate('parent', 'name role email')
+      .populate('createdBy', 'name role email')
+      .sort({ createdAt: -1 });
     return successResponse(res, 200, 'Users fetched successfully', users);
   } catch (error) {
     next(error);
@@ -40,7 +45,11 @@ export const getUsers = async (req, res, next) => {
 // @access  Private
 export const createUser = async (req, res, next) => {
   try {
-    const { name, email, password, role } = req.body;
+    if (!isAdminUser(req.user)) {
+      return errorResponse(res, 403, 'Only admin can create users');
+    }
+
+    const { name, email, password, role, phone, parent, status } = req.body;
 
     const userExists = await User.findOne({ email });
     if (userExists) {
@@ -51,7 +60,12 @@ export const createUser = async (req, res, next) => {
       name,
       email,
       password,
-      role
+      role,
+      phone,
+      parent: parent || null,
+      status: status || 'active',
+      isActive: status !== 'inactive',
+      createdBy: req.user._id,
     });
 
     // If the role exists in the Role collection, increment its usersCount
@@ -66,11 +80,20 @@ export const createUser = async (req, res, next) => {
       firstName,
       lastName,
       email,
-      phone: 'N/A',
+      phone: phone || 'N/A',
       designation: role || 'Employee',
       department: 'N/A',
       joiningDate: new Date(),
       createdBy: req.user._id
+    });
+
+    await logActivity({
+      user: req.user._id,
+      actionType: 'user_created',
+      description: `Created user ${user.name}`,
+      entityType: 'User',
+      entityId: user._id,
+      metadata: { role: user.role, parent: user.parent },
     });
 
     const userObj = user.toJSON(); // toJSON removes password
@@ -86,7 +109,11 @@ export const createUser = async (req, res, next) => {
 // @access  Private
 export const updateUser = async (req, res, next) => {
   try {
-    const { name, email, password, role } = req.body;
+    if (!isAdminUser(req.user)) {
+      return errorResponse(res, 403, 'Only admin can edit users');
+    }
+
+    const { name, email, password, role, phone, parent, status, isActive } = req.body;
     const user = await User.findById(req.params.id);
 
     if (!user) {
@@ -106,6 +133,17 @@ export const updateUser = async (req, res, next) => {
 
     user.name = name || user.name;
     user.email = email || user.email;
+    user.phone = phone ?? user.phone;
+    if (parent !== undefined) {
+      user.parent = parent || null;
+    }
+    if (status) {
+      user.status = status;
+      user.isActive = status !== 'inactive';
+    } else if (isActive !== undefined) {
+      user.isActive = Boolean(isActive);
+      user.status = user.isActive ? 'active' : 'inactive';
+    }
     if (password) {
       user.password = password;
     }
@@ -125,8 +163,17 @@ export const updateUser = async (req, res, next) => {
     
     await Employee.findOneAndUpdate(
       { email: oldEmail }, 
-      { firstName, lastName, email: user.email, designation: user.role }
+      { firstName, lastName, email: user.email, phone: user.phone || 'N/A', designation: user.role }
     );
+
+    await logActivity({
+      user: req.user._id,
+      actionType: 'user_updated',
+      description: `Updated user ${user.name}`,
+      entityType: 'User',
+      entityId: user._id,
+      metadata: { oldRole, newRole: user.role, parent: user.parent, status: user.status },
+    });
 
     const userObj = user.toJSON();
 
@@ -147,6 +194,10 @@ export const deleteUser = async (req, res, next) => {
       return errorResponse(res, 404, 'User not found');
     }
     
+    if (!isAdminUser(req.user)) {
+      return errorResponse(res, 403, 'Only admin can delete users');
+    }
+
     // Decrease usersCount in Role
     await Role.findOneAndUpdate({ name: user.role }, { $inc: { usersCount: -1 } });
 

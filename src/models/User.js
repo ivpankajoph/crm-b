@@ -13,6 +13,10 @@ const userSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
     },
+    phone: {
+      type: String,
+      trim: true,
+    },
     password: {
       type: String,
       required: true,
@@ -23,6 +27,21 @@ const userSchema = new mongoose.Schema(
       required: true,
       default: 'user',
     },
+    parent: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+    },
+    status: {
+      type: String,
+      enum: ['active', 'inactive'],
+      default: 'active',
+    },
     isActive: {
       type: Boolean,
       default: true,
@@ -32,6 +51,13 @@ const userSchema = new mongoose.Schema(
     timestamps: true, // Automatically adds createdAt and updatedAt
   }
 );
+
+userSchema.index({ parent: 1 });
+userSchema.index({ role: 1, status: 1 });
+
+userSchema.pre('validate', function () {
+  this.isActive = this.status !== 'inactive';
+});
 
 
 

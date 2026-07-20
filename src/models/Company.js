@@ -56,15 +56,21 @@ const companySchema = new mongoose.Schema({
   followTypeDate: {
     type: Date,
   },
+  scheduledDateTime: {
+    type: Date,
+  },
   followType: {
+    type: String,
+  },
+  messageNotes: {
     type: String,
   },
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   leadSource: { type: String, default: 'Direct' },
-  assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  assignedTo: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   leadStatus: {
     type: String,
-    enum: ['New', 'Interested', 'Not Interested', 'Prospective', 'Committed', 'Converted', 'Follow Up'],
+    enum: ['New', 'Demo Scheduled', 'Interested', 'Not Interested', 'Prospective', 'Committed', 'Converted', 'Follow Up'],
     default: 'New'
   },
   comments: [{
@@ -79,6 +85,9 @@ const companySchema = new mongoose.Schema({
 }, {
   timestamps: true,
 });
+
+companySchema.index({ createdBy: 1, assignedTo: 1, leadStatus: 1, createdAt: -1 });
+companySchema.index({ scheduledDateTime: 1, followTypeDate: 1 });
 
 const Company = mongoose.model('Company', companySchema);
 

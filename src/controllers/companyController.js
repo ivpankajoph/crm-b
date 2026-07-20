@@ -1,15 +1,23 @@
 import Company from '../models/Company.js';
+import LeadStatusHistory from '../models/LeadStatusHistory.js';
 import { successResponse, errorResponse } from '../utils/response.js';
+import { isAdminUser } from '../utils/hierarchy.js';
+import { logActivity } from '../utils/activity.js';
+
+const normalizeAssignees = (assignedTo) => {
+  if (!assignedTo) return [];
+  return Array.isArray(assignedTo) ? assignedTo.filter(Boolean) : [assignedTo];
+};
+
+const isAssignedToUser = (lead, userId) => normalizeAssignees(lead.assignedTo)
+  .some((assigneeId) => assigneeId?.toString() === userId.toString());
 
 // @desc    Get all companies
 // @route   GET /api/companies
 // @access  Private
 export const getCompanies = async (req, res, next) => {
   try {
-    let query = {};
-    if (req.user.role !== 'admin') {
-      query.createdBy = req.user._id;
-    }
+    const query = isAdminUser(req.user) ? {} : { assignedTo: req.user._id };
 
     const companies = await Company.find(query)
       .populate('createdBy', 'name role email')
@@ -30,8 +38,10 @@ export const createCompany = async (req, res, next) => {
       companyName, customerName, customerDesignation, email1, email2, 
       mobileNo, phoneNo, products, businessType, address1, address2, 
       city, state, country, website1, website2, followTypeDate, followType,
-      leadStatus
+      leadStatus, assignedTo, messageNotes, scheduledDateTime
     } = req.body;
+
+    const finalLeadStatus = scheduledDateTime ? 'Demo Scheduled' : leadStatus || 'New';
 
     const company = await Company.create({
       companyName,
@@ -51,12 +61,31 @@ export const createCompany = async (req, res, next) => {
       website1,
       website2,
       followTypeDate,
+      scheduledDateTime,
       followType,
-      leadStatus,
+      messageNotes,
+      leadStatus: finalLeadStatus,
+      assignedTo: [assignedTo || req.user._id],
       createdBy: req.user._id // Taken from authMiddleware
     });
 
-    const populatedCompany = await Company.findById(company._id).populate('createdBy', 'name role email');
+    await LeadStatusHistory.create({
+      lead: company._id,
+      leadModel: 'Company',
+      oldStatus: null,
+      newStatus: finalLeadStatus,
+      changedBy: req.user._id,
+    });
+
+    await logActivity({
+      user: req.user._id,
+      actionType: 'lead_created',
+      description: `Created company lead ${company.companyName}`,
+      entityType: 'Company',
+      entityId: company._id,
+    });
+
+    const populatedCompany = await Company.findById(company._id).populate('createdBy', 'name role email').populate('assignedTo', 'name role email');
 
     return successResponse(res, 201, 'Company created successfully', populatedCompany);
   } catch (error) {
@@ -75,7 +104,9 @@ export const getCompanyById = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Company not found' });
     }
 
-    if (req.user.role !== 'admin' && company.createdBy._id.toString() !== req.user._id.toString()) {
+    const canView = isAdminUser(req.user)
+      || isAssignedToUser(company, req.user._id);
+    if (!canView) {
        return res.status(403).json({ success: false, message: 'Not authorized to view this company' });
     }
 
@@ -96,7 +127,9 @@ export const updateCompany = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Company not found' });
     }
 
-    if (req.user.role !== 'admin' && company.createdBy.toString() !== req.user._id.toString()) {
+    const canEdit = isAdminUser(req.user)
+      || isAssignedToUser(company, req.user._id);
+    if (!canEdit) {
        return res.status(403).json({ success: false, message: 'Not authorized to edit this company' });
     }
 
@@ -104,15 +137,33 @@ export const updateCompany = async (req, res, next) => {
       companyName, customerName, customerDesignation, email1, email2, 
       mobileNo, phoneNo, products, businessType, address1, address2, 
       city, state, country, website1, website2, followTypeDate, followType,
-      leadStatus
+      leadStatus, assignedTo, messageNotes, scheduledDateTime
     } = req.body;
+    const oldStatus = company.leadStatus;
+    const finalLeadStatus = scheduledDateTime ? 'Demo Scheduled' : leadStatus;
 
     company = await Company.findByIdAndUpdate(req.params.id, {
       companyName, customerName, customerDesignation, email1, email2, 
       mobileNo, phoneNo, products, businessType, address1, address2, 
       city, state, country, website1, website2, followTypeDate, followType,
-      leadStatus
+      messageNotes, scheduledDateTime,
+      leadStatus: finalLeadStatus || oldStatus
     }, { new: true, runValidators: true }).populate('createdBy', 'name role email');
+
+    if (assignedTo) {
+      await Company.findByIdAndUpdate(company._id, { $addToSet: { assignedTo } });
+      company = await Company.findById(company._id).populate('createdBy', 'name role email').populate('assignedTo', 'name role email');
+    }
+
+    if (finalLeadStatus && oldStatus !== finalLeadStatus) {
+      await LeadStatusHistory.create({
+        lead: company._id,
+        leadModel: 'Company',
+        oldStatus,
+        newStatus: finalLeadStatus,
+        changedBy: req.user._id,
+      });
+    }
 
     return successResponse(res, 200, 'Company updated successfully', company);
   } catch (error) {
@@ -131,7 +182,7 @@ export const deleteCompany = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Company not found' });
     }
 
-    if (req.user.role !== 'admin' && company.createdBy.toString() !== req.user._id.toString()) {
+    if (!isAdminUser(req.user) && company.createdBy.toString() !== req.user._id.toString()) {
        return res.status(403).json({ success: false, message: 'Not authorized to delete this company' });
     }
 
