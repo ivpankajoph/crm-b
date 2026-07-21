@@ -9,6 +9,9 @@ import LeadStatusHistory from '../models/LeadStatusHistory.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { getDownlineUserIds, isAdminUser, normalizeRole } from '../utils/hierarchy.js';
 import { logActivity } from '../utils/activity.js';
+import Setting from '../models/Setting.js';
+import { createPlivoBridge, prepareBrowserCall } from './telephonyController.js';
+import { normalizePhone } from '../services/plivoService.js';
 
 const STATUS_ALIASES = {
   demo_scheduled: 'Demo Scheduled',
@@ -655,41 +658,37 @@ export const startLeadCall = async (req, res, next) => {
     const lead = await findUnifiedLeadForUser(type, id, req.user);
     if (!lead) return errorResponse(res, 404, 'Lead not found');
 
-    const leadPhone = lead.mobileNo || lead.phoneNo || lead.phone;
-    if (!leadPhone) return errorResponse(res, 400, 'Lead phone number is missing');
+    const leadPhone = normalizePhone(lead.mobileNo || lead.phoneNo || lead.phone);
+    const browserMode = req.body.mode === 'browser';
+    const agentPhone = normalizePhone(req.user.phone);
+    if (!leadPhone) return errorResponse(res, 400, 'Lead phone must include country code (for example +919876543210)');
+    if (!browserMode && !agentPhone) return errorResponse(res, 400, 'Add your phone with country code in your CRM user profile before calling');
+    const settings = await Setting.findOne();
+    const callerId = normalizePhone(settings?.plivoNumber);
+    if (!callerId) return errorResponse(res, 400, 'An admin must select a Plivo virtual number in Calling');
 
-    const providerCallId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const callLog = await CallLog.create({
       lead: lead._id,
       leadModel: type,
       calledBy: req.user._id,
-      providerCallId,
-      status: process.env.TELEPHONY_CLICK_TO_CALL_URL ? 'ringing' : 'queued',
+      status: 'queued',
+      fromNumber: callerId,
+      toNumber: leadPhone,
     });
-
-    let providerResponse = { mode: 'local', message: 'Telephony provider not configured. Call log created.' };
-    if (process.env.TELEPHONY_CLICK_TO_CALL_URL) {
-      try {
-        const response = await fetch(process.env.TELEPHONY_CLICK_TO_CALL_URL, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(process.env.TELEPHONY_API_KEY ? { Authorization: `Bearer ${process.env.TELEPHONY_API_KEY}` } : {}),
-          },
-          body: JSON.stringify({
-            agentNumber: req.user.phone,
-            leadNumber: leadPhone,
-            leadId: lead._id,
-            callLogId: callLog._id,
-            webhookUrl: process.env.CALL_COMPLETED_WEBHOOK_URL,
-          }),
-        });
-        providerResponse = await response.json().catch(() => ({ status: response.status }));
-      } catch (error) {
-        callLog.status = 'failed';
+    let providerResponse;
+    try {
+      if (browserMode) {
+        providerResponse = await prepareBrowserCall({ callLog, user: req.user });
+      } else {
+        providerResponse = await createPlivoBridge({ callLog, agentNumber: agentPhone });
+        callLog.providerCallId = providerResponse.request_uuid || providerResponse.requestUuid;
+        callLog.status = 'ringing';
         await callLog.save();
-        return errorResponse(res, 502, `Telephony provider failed: ${error.message}`);
       }
+    } catch (error) {
+      callLog.status = 'failed';
+      await callLog.save();
+      return errorResponse(res, 502, `Plivo call failed: ${error.message}`);
     }
 
     await logActivity({
@@ -698,10 +697,10 @@ export const startLeadCall = async (req, res, next) => {
       description: `Started call for ${getLeadName(lead)}`,
       entityType: type,
       entityId: lead._id,
-      metadata: { callLog: callLog._id, providerCallId },
+      metadata: { callLog: callLog._id, providerCallId: callLog.providerCallId },
     });
 
-    return successResponse(res, 201, 'Call bridge requested', { callLog, providerResponse });
+    return successResponse(res, 201, browserMode ? 'Browser call prepared' : 'Call bridge requested', { callLog, providerResponse, mode: browserMode ? 'browser' : 'bridge' });
   } catch (error) {
     next(error);
   }

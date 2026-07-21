@@ -16,6 +16,14 @@ const settingSchema = new mongoose.Schema({
   contactPhone: {
     type: String,
     default: ''
+  },
+  plivoNumber: {
+    type: String,
+    default: ''
+  },
+  plivoApplicationId: {
+    type: String,
+    default: ''
   }
 }, {
   timestamps: true

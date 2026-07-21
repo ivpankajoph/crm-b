@@ -46,6 +46,9 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    plivoEndpointId: { type: String, select: false },
+    plivoEndpointUsername: { type: String, select: false },
+    plivoEndpointPassword: { type: String, select: false },
   },
   {
     timestamps: true, // Automatically adds createdAt and updatedAt

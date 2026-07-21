@@ -24,6 +24,8 @@ import messageRoutes from './routes/messageRoutes.js';
 import reportsRoutes from './routes/reportsRoutes.js';
 import settingsRoutes from './routes/settingsRoutes.js';
 import attendanceRoutes from './routes/attendanceRoutes.js';
+import telephonyRoutes from './routes/telephonyRoutes.js';
+import whatsappRoutes from './routes/whatsappRoutes.js';
 
 dotenv.config();
 
@@ -109,6 +111,8 @@ app.use('/api/messages', messageRoutes);
 app.use('/api/reports', reportsRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/attendance', attendanceRoutes);
+app.use('/api/telephony', telephonyRoutes);
+app.use('/api/whatsapp', whatsappRoutes);
 
 // Root route
 app.get('/', (req, res) => {
