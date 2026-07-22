@@ -34,7 +34,7 @@ dotenv.config();
 // MONGODB_URI, so both applications intentionally use the same database.
 process.env.MONGODB_URL ||= process.env.MONGODB_URI;
 const { default: whatsappMarketingRouter } = await import(
-  '../../sellerslogin-backend/modules/whatsapp-marketing/index.js'
+  './modules/whatsapp-marketing/index.js'
 );
 
 const __filename = fileURLToPath(import.meta.url);
