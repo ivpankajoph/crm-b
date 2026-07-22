@@ -8,6 +8,7 @@ import cookieParser from 'cookie-parser';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
 import { notFound, errorHandler } from './middleware/errorMiddleware.js';
+import { protect } from './middleware/authMiddleware.js';
 import authRoutes from './routes/authRoutes.js';
 import roleRoutes from './routes/roleRoutes.js';
 import dashboardRoutes from './routes/dashboardRoutes.js';
@@ -29,10 +30,41 @@ import whatsappRoutes from './routes/whatsappRoutes.js';
 
 dotenv.config();
 
+// The shared WhatsApp module uses this name; CRM already connects with
+// MONGODB_URI, so both applications intentionally use the same database.
+process.env.MONGODB_URL ||= process.env.MONGODB_URI;
+const { default: whatsappMarketingRouter } = await import(
+  '../../sellerslogin-backend/modules/whatsapp-marketing/index.js'
+);
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+
+const bridgeCrmUserToWhatsApp = (req, res, next) => {
+  if (req.path.startsWith('/webhook/whatsapp')) return next();
+  return protect(req, res, () => {
+    const crmUser = req.user;
+    const normalizedRole = ['admin', 'superadmin', 'super_admin'].includes(
+      String(crmUser?.role || '').toLowerCase()
+    ) ? 'admin' : 'user';
+    const whatsappUser = {
+      id: `crm:${crmUser._id}`,
+      accountId: String(crmUser._id),
+      username: crmUser.email || `crm_${crmUser._id}`,
+      name: crmUser.name || 'CRM User',
+      email: crmUser.email || '',
+      role: normalizedRole,
+      pageAccess: crmUser.permissions || [],
+    };
+    req.headers['x-user-id'] = whatsappUser.id;
+    req.headers['x-user-role'] = whatsappUser.role;
+    req.headers['x-user-name'] = whatsappUser.name;
+    req.headers['x-user'] = JSON.stringify(whatsappUser);
+    next();
+  });
+};
 
 const defaultAllowedOrigins = [
   'http://localhost:5173',
@@ -66,7 +98,7 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id', 'x-user-role', 'x-user-name', 'x-user'],
   optionsSuccessStatus: 204,
 };
 
@@ -113,6 +145,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/telephony', telephonyRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/whatsapp-marketing', bridgeCrmUserToWhatsApp, whatsappMarketingRouter);
 
 // Root route
 app.get('/', (req, res) => {
