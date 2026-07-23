@@ -3,6 +3,8 @@ import connectDB from './config/db.js';
 import seedAdmin from './seed/adminSeed.js';
 import http from 'http';
 import { Server } from 'socket.io';
+import { startEmailMarketingRuntime } from './modules/email-marketing/services/emailQueueService.js';
+import { startEmailMarketingAutomationRuntime } from './modules/email-marketing/services/automationQueueService.js';
 
 const PORT = process.env.PORT || 8080;
 
@@ -12,6 +14,18 @@ const startServer = async () => {
     
     // Seed admin user
     await seedAdmin();
+    await startEmailMarketingRuntime().catch((error) => {
+      console.error(
+        '[Email Marketing] Background runtime could not start:',
+        error.message,
+      );
+    });
+    await startEmailMarketingAutomationRuntime().catch((error) => {
+      console.error(
+        '[Email Marketing] Automation runtime could not start:',
+        error.message,
+      );
+    });
 
     const server = http.createServer(app);
     const io = new Server(server, {
