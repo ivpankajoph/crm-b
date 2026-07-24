@@ -5,7 +5,10 @@ import EmailMarketingCampaign from '../models/EmailMarketingCampaign.js';
 import EmailMarketingDomain from '../models/EmailMarketingDomain.js';
 import EmailMarketingEvent from '../models/EmailMarketingEvent.js';
 import EmailMarketingRecipient from '../models/EmailMarketingRecipient.js';
-import { normalizeCampaignPayload } from '../services/campaignService.js';
+import {
+  isCampaignEditableStatus,
+  normalizeCampaignPayload,
+} from '../services/campaignService.js';
 import {
   buildDomainDnsRecords,
   normalizeDomain,
@@ -25,7 +28,11 @@ import {
   renderTemplateHtml,
   renderTestCampaignEmail,
 } from '../services/emailRenderService.js';
-import { calculateDelayMs, nextRecurrenceDate } from '../utils/campaign.js';
+import {
+  calculateDelayMs,
+  calculateNextCampaignRunNumber,
+  nextRecurrenceDate,
+} from '../utils/campaign.js';
 import {
   createTrackingToken,
   verifyTrackingToken,
@@ -148,6 +155,55 @@ test('visual template blocks render safely for backend delivery', () => {
   assert.match(html, /Line one<br>Line two/);
   assert.match(html, /href="#"/);
   assert.doesNotMatch(html, /javascript:|data:text\/html/i);
+});
+
+test('expanded visual blocks render into delivery-safe email HTML', () => {
+  const html = renderTemplateHtml({
+    htmlContent: '',
+    blocks: [
+      { type: 'dynamic', content: 'Hello {{first_name}}' },
+      {
+        type: 'video',
+        content: 'https://example.com/thumbnail.jpg',
+        href: 'https://example.com/watch',
+      },
+      {
+        type: 'logo',
+        content: 'https://example.com/logo.png',
+        href: 'https://example.com',
+      },
+      {
+        type: 'social',
+        items: [
+          { label: 'Safe', url: 'https://example.com/social' },
+          { label: 'Unsafe', url: 'javascript:alert(1)' },
+        ],
+      },
+      {
+        type: 'product',
+        content: 'Starter plan',
+        subtitle: 'A useful product',
+        price: '₹999',
+        imageUrl: 'https://example.com/product.jpg',
+        href: 'https://example.com/product',
+        buttonText: 'View product',
+      },
+      {
+        type: 'navigation',
+        items: [{ label: 'Shop', url: 'https://example.com/shop' }],
+      },
+      { type: 'html', content: '<strong>Custom block</strong>' },
+    ],
+  });
+
+  assert.match(html, /Hello \{\{first_name\}\}/);
+  assert.match(html, /Watch video/);
+  assert.match(html, /logo\.png/);
+  assert.match(html, /Starter plan/);
+  assert.match(html, /View product/);
+  assert.match(html, />Shop</);
+  assert.match(html, /<strong>Custom block<\/strong>/);
+  assert.doesNotMatch(html, /javascript:/i);
 });
 
 test('visual template test-send personalizes snake-case placeholders', () => {
@@ -295,6 +351,18 @@ test('partial campaign updates preserve omitted relationships and dates', () => 
   assert.deepEqual(normalizeCampaignPayload(parsed.data.body), {
     previewText: 'Fresh preview',
   });
+});
+
+test('sent campaigns remain editable for same-id resend', () => {
+  assert.equal(isCampaignEditableStatus('sent'), true);
+  assert.equal(isCampaignEditableStatus('sending'), false);
+  assert.equal(isCampaignEditableStatus('archived'), false);
+});
+
+test('campaign resend advances beyond every preserved recipient run', () => {
+  assert.equal(calculateNextCampaignRunNumber(0, 0), 1);
+  assert.equal(calculateNextCampaignRunNumber(1, 1), 2);
+  assert.equal(calculateNextCampaignRunNumber(1, 3), 4);
 });
 
 test('campaign payload converts explicitly cleared references to null', () => {

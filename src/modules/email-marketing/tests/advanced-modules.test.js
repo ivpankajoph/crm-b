@@ -1,7 +1,21 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { getEmailMarketingConfig } from '../config/emailMarketingConfig.js';
+import {
+  getEmailMarketingConfig,
+  getPublicEmailMarketingConfig,
+} from '../config/emailMarketingConfig.js';
+import {
+  isEmailQueueConfigured,
+  scheduleCampaignDelivery,
+  stopEmailMarketingRuntime,
+} from '../services/emailQueueService.js';
+import {
+  isAutomationQueueConfigured,
+  scheduleAutomationExecution,
+  stopEmailMarketingAutomationRuntime,
+} from '../services/automationQueueService.js';
+import { assertSesSendingConfigured } from '../services/sesService.js';
 import {
   EMAIL_MARKETING_PERMISSIONS,
   EMAIL_MARKETING_PERMISSION_VALUES,
@@ -207,5 +221,57 @@ test('credit enforcement and purchases remain safe-by-default', () => {
       process.env.EMAIL_MARKETING_CREDIT_PURCHASES_ENABLED =
         previousPurchases;
     }
+  }
+});
+
+test('email sending and queues derive readiness without boolean feature flags', () => {
+  const keys = [
+    'EMAIL_MARKETING_SENDING_ENABLED',
+    'EMAIL_MARKETING_QUEUE_ENABLED',
+    'EMAIL_MARKETING_PUBLIC_URL',
+    'EMAIL_MARKETING_TRACKING_SECRET',
+  ];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  process.env.EMAIL_MARKETING_SENDING_ENABLED = 'false';
+  process.env.EMAIL_MARKETING_QUEUE_ENABLED = 'false';
+  process.env.EMAIL_MARKETING_PUBLIC_URL = 'https://email.example.com';
+  process.env.EMAIL_MARKETING_TRACKING_SECRET = 'test-tracking-secret';
+
+  try {
+    const config = getEmailMarketingConfig();
+    const publicConfig = getPublicEmailMarketingConfig();
+    assert.equal('sendingEnabled' in config, false);
+    assert.equal('queueEnabled' in config, false);
+    assert.equal(publicConfig.capabilities.sending, true);
+    assert.equal(publicConfig.capabilities.scheduling, true);
+    assert.equal(isEmailQueueConfigured(), true);
+    assert.equal(isAutomationQueueConfigured(), true);
+    assert.doesNotThrow(() => assertSesSendingConfigured());
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});
+
+test('backend schedulers accept jobs without Redis', async () => {
+  const runAt = new Date(Date.now() + 60_000);
+  try {
+    const campaignJobId = await scheduleCampaignDelivery({
+      campaignId: '507f1f77bcf86cd799439011',
+      workspaceId: '507f1f77bcf86cd799439012',
+      runAt,
+    });
+    const automationJobId = await scheduleAutomationExecution({
+      executionId: '507f1f77bcf86cd799439013',
+      workspaceId: '507f1f77bcf86cd799439012',
+      runAt,
+    });
+    assert.match(campaignJobId, /^email-/);
+    assert.match(automationJobId, /^automation-execution-/);
+  } finally {
+    await stopEmailMarketingRuntime();
+    await stopEmailMarketingAutomationRuntime();
   }
 });

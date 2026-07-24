@@ -232,6 +232,7 @@ export const dispatchCampaignJob = async ({
         await campaign.save();
         return { nextRunAt, nextStepIndex, runNumber: activeRun };
       }
+      campaign.recurrenceRunCount = activeRun;
       campaign.status = sent || subscribers.length === 0 ? 'sent' : 'failed';
       campaign.scheduledAt = null;
       await campaign.save();

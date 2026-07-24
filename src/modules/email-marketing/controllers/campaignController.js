@@ -10,6 +10,7 @@ import EmailMarketingRecipient from '../models/EmailMarketingRecipient.js';
 import EmailMarketingTemplate from '../models/EmailMarketingTemplate.js';
 import { recordEmailMarketingAudit } from '../services/auditService.js';
 import {
+  isCampaignEditableStatus,
   normalizeCampaignPayload,
   validateCampaignDefinition,
 } from '../services/campaignService.js';
@@ -24,10 +25,11 @@ import {
 import { buildWorkspaceFilter } from '../services/workspaceService.js';
 import { sendSesEmail } from '../services/sesService.js';
 import { resolveEmailMarketingSender } from '../services/senderService.js';
-import { calculateDelayMs } from '../utils/campaign.js';
+import {
+  calculateDelayMs,
+  calculateNextCampaignRunNumber,
+} from '../utils/campaign.js';
 import { escapeRegex } from '../utils/segmentFilter.js';
-
-const editableStatuses = new Set(['draft', 'scheduled', 'paused', 'failed']);
 
 export const sendCampaignTestEmail = async (req, res, next) => {
   try {
@@ -209,7 +211,7 @@ export const updateCampaign = async (req, res, next) => {
       buildWorkspaceFilter(req.emailMarketing, { _id: req.validated.params.id }),
     );
     if (!campaign) return errorResponse(res, 404, 'Campaign not found');
-    if (!editableStatuses.has(campaign.status)) {
+    if (!isCampaignEditableStatus(campaign.status)) {
       return errorResponse(res, 409, 'This campaign can no longer be edited');
     }
     const payload = normalizeCampaignPayload({
@@ -289,7 +291,26 @@ const queueCampaign = async ({ req, campaign, runAt, status }) => {
   campaign.fromName = sender.fromName;
   campaign.fromEmail = sender.fromEmail;
   campaign.replyTo = sender.replyTo;
+  const isResend = campaign.status === 'sent';
+  if (isResend && campaign.type === 'drip_campaign') {
+    campaign.currentDripStep = 0;
+  }
   const stepIndex = campaign.type === 'drip_campaign' ? campaign.currentDripStep : -1;
+  let latestRecipientRunNumber = 0;
+  if (isResend) {
+    const latestRecipient = await EmailMarketingRecipient.findOne({
+      workspaceId: campaign.workspaceId,
+      campaignId: campaign._id,
+    })
+      .sort({ runNumber: -1 })
+      .select('runNumber')
+      .lean();
+    latestRecipientRunNumber = latestRecipient?.runNumber || 0;
+  }
+  const runNumber = calculateNextCampaignRunNumber(
+    campaign.recurrenceRunCount,
+    latestRecipientRunNumber,
+  );
   const actualRunAt =
     campaign.type === 'drip_campaign' && stepIndex === 0
       ? new Date(
@@ -300,19 +321,19 @@ const queueCampaign = async ({ req, campaign, runAt, status }) => {
             ),
         )
       : new Date(runAt);
-  await scheduleCampaignDelivery({
-    campaignId: campaign._id,
-    workspaceId: campaign.workspaceId,
-    runAt: actualRunAt,
-    runNumber: Math.max(1, campaign.recurrenceRunCount + 1),
-    stepIndex,
-  });
   campaign.status = status;
   campaign.scheduledAt = actualRunAt;
   campaign.processing = false;
   campaign.lastError = '';
   campaign.updatedBy = req.user._id;
   await campaign.save();
+  await scheduleCampaignDelivery({
+    campaignId: campaign._id,
+    workspaceId: campaign.workspaceId,
+    runAt: actualRunAt,
+    runNumber,
+    stepIndex,
+  });
   return campaign;
 };
 
@@ -322,7 +343,7 @@ export const scheduleCampaign = async (req, res, next) => {
       buildWorkspaceFilter(req.emailMarketing, { _id: req.validated.params.id }),
     );
     if (!campaign) return errorResponse(res, 404, 'Campaign not found');
-    if (!editableStatuses.has(campaign.status)) {
+    if (!isCampaignEditableStatus(campaign.status)) {
       return errorResponse(res, 409, 'Campaign cannot be scheduled from its current status');
     }
     const runAt = new Date(req.validated.body.scheduledAt);
@@ -355,7 +376,7 @@ export const sendCampaignNow = async (req, res, next) => {
       buildWorkspaceFilter(req.emailMarketing, { _id: req.validated.params.id }),
     );
     if (!campaign) return errorResponse(res, 404, 'Campaign not found');
-    if (!editableStatuses.has(campaign.status)) {
+    if (!isCampaignEditableStatus(campaign.status)) {
       return errorResponse(res, 409, 'Campaign cannot be sent from its current status');
     }
     await queueCampaign({

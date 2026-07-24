@@ -8,6 +8,16 @@ export const calculateDelayMs = (value, unit) => {
   return Math.max(0, Number(value) || 0) * (multipliers[unit] || 0);
 };
 
+export const calculateNextCampaignRunNumber = (
+  recurrenceRunCount = 0,
+  latestRecipientRunNumber = 0,
+) =>
+  Math.max(
+    1,
+    Number(recurrenceRunCount || 0) + 1,
+    Number(latestRecipientRunNumber || 0) + 1,
+  );
+
 export const nextRecurrenceDate = (campaign, from = new Date()) => {
   if (!campaign.isRecurring) return null;
   const next = new Date(from);
