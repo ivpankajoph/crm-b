@@ -3,6 +3,8 @@ import LeadStatusHistory from '../models/LeadStatusHistory.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { isAdminUser } from '../utils/hierarchy.js';
 import { logActivity } from '../utils/activity.js';
+import { invalidateLeadMetricsCaches } from '../services/cacheService.js';
+import { escapeRegex, pagedData, paginationMeta, parsePagination, safeSort } from '../services/listQueryService.js';
 
 const normalizeAssignees = (assignedTo) => {
   if (!assignedTo) return [];
@@ -24,6 +26,60 @@ export const getCompanies = async (req, res, next) => {
       .sort({ createdAt: -1 });
     
     return successResponse(res, 200, 'Companies fetched successfully', companies);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getCompaniesPaged = async (req, res, next) => {
+  try {
+    const { page, limit, skip, search } = parsePagination(req.query);
+    const filter = isAdminUser(req.user) ? {} : { assignedTo: req.user._id };
+    if (search) {
+      const pattern = new RegExp(escapeRegex(search), 'i');
+      filter.$or = [
+        { companyName: pattern },
+        { customerName: pattern },
+        { email1: pattern },
+        { mobileNo: pattern },
+        { city: pattern },
+      ];
+    }
+    if (req.query.status && req.query.status !== 'all') filter.leadStatus = req.query.status;
+    if (req.query.city && req.query.city !== 'all') filter.city = req.query.city;
+
+    const [items, total, cities] = await Promise.all([
+      Company.find(filter)
+        .select('companyName customerName customerDesignation email1 mobileNo website1 city country leadStatus createdBy assignedTo createdAt')
+        .populate('createdBy', 'name role')
+        .populate('assignedTo', 'name')
+        .sort(safeSort(req.query, ['createdAt', 'companyName', 'city']))
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Company.countDocuments(filter),
+      Company.distinct('city', isAdminUser(req.user) ? {} : { assignedTo: req.user._id }),
+    ]);
+    return successResponse(res, 200, 'Companies page fetched successfully', pagedData(
+      items,
+      paginationMeta({ page, limit, total }),
+      { cities: cities.filter(Boolean).sort() },
+    ));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getCompanyOptions = async (req, res, next) => {
+  try {
+    const search = String(req.query.search || '').trim();
+    const filter = isAdminUser(req.user) ? {} : { assignedTo: req.user._id };
+    if (search) filter.companyName = new RegExp(escapeRegex(search), 'i');
+    const companies = await Company.find(filter)
+      .select('companyName customerName email1 mobileNo')
+      .sort({ companyName: 1 })
+      .lean();
+    return successResponse(res, 200, 'Company options fetched successfully', companies);
   } catch (error) {
     next(error);
   }
@@ -87,6 +143,7 @@ export const createCompany = async (req, res, next) => {
 
     const populatedCompany = await Company.findById(company._id).populate('createdBy', 'name role email').populate('assignedTo', 'name role email');
 
+    await invalidateLeadMetricsCaches();
     return successResponse(res, 201, 'Company created successfully', populatedCompany);
   } catch (error) {
     next(error);
@@ -165,6 +222,7 @@ export const updateCompany = async (req, res, next) => {
       });
     }
 
+    await invalidateLeadMetricsCaches();
     return successResponse(res, 200, 'Company updated successfully', company);
   } catch (error) {
     next(error);
@@ -188,6 +246,7 @@ export const deleteCompany = async (req, res, next) => {
 
     await company.deleteOne();
 
+    await invalidateLeadMetricsCaches();
     return successResponse(res, 200, 'Company deleted successfully');
   } catch (error) {
     next(error);
@@ -223,6 +282,7 @@ export const bulkCreateCompanies = async (req, res, next) => {
 
     const result = await Company.insertMany(companiesToInsert);
 
+    await invalidateLeadMetricsCaches();
     return successResponse(res, 201, `${result.length} Companies imported successfully`, { count: result.length });
   } catch (error) {
     next(error);

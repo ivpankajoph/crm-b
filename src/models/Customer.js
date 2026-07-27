@@ -52,6 +52,9 @@ const customerSchema = new mongoose.Schema({
     enum: ['New', 'Demo Scheduled', 'Interested', 'Not Interested', 'Prospective', 'Committed', 'Converted', 'Follow Up'],
     default: 'New'
   },
+  leadStatusChangedAt: {
+    type: Date,
+  },
   leadSource: {
     type: String,
     default: 'Direct'
@@ -79,7 +82,12 @@ const customerSchema = new mongoose.Schema({
 });
 
 customerSchema.index({ createdBy: 1, assignedTo: 1, leadStatus: 1, createdAt: -1 });
+customerSchema.index({ assignedTo: 1, createdAt: -1, leadStatus: 1 });
+customerSchema.index({ createdAt: -1, leadStatus: 1 });
 customerSchema.index({ scheduledDateTime: 1 });
+customerSchema.index({ createdBy: 1, createdAt: -1 }, { name: 'customer_createdBy_createdAt' });
+customerSchema.index({ assignedTo: 1, createdAt: -1 }, { name: 'customer_assignedTo_createdAt' });
+customerSchema.index({ leadStatus: 1, createdAt: 1 }, { name: 'customer_leadStatus_createdAt' });
 
 const Customer = mongoose.model('Customer', customerSchema);
 

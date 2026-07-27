@@ -77,6 +77,12 @@ const employeeSchema = new mongoose.Schema(
       ref: 'User',
       default: null,
     },
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
     address: {
       line1: { type: String, trim: true },
       line2: { type: String, trim: true },
@@ -110,6 +116,10 @@ const employeeSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+employeeSchema.index({ status: 1, department: 1, createdAt: -1 });
+employeeSchema.index({ manager: 1, status: 1, createdAt: -1 });
+employeeSchema.index({ createdAt: -1 });
 
 employeeSchema.pre('validate', async function () {
   if (this.employeeId) return;

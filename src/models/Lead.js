@@ -34,6 +34,9 @@ const leadSchema = new mongoose.Schema({
     enum: ['New', 'Demo Scheduled', 'Prospective', 'Interested', 'Not Interested', 'Committed', 'Converted', 'Follow Up'],
     default: 'New',
   },
+  leadStatusChangedAt: {
+    type: Date,
+  },
   meetingsCount: {
     type: Number,
     default: 0,

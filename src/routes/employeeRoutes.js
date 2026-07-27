@@ -1,6 +1,7 @@
 import express from 'express';
 import {
   getEmployees,
+  getEmployeesPaged,
   createEmployee,
   getEmployeeById,
   updateEmployee,
@@ -14,6 +15,7 @@ const router = express.Router();
 
 router.get('/team-leaders', protect, getTeamLeaders);
 router.get('/me', protect, getMyEmployeeProfile);
+router.get('/paged', protect, getEmployeesPaged);
 
 router.route('/')
   .get(protect, getEmployees)

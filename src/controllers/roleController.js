@@ -1,4 +1,5 @@
 import Role from '../models/Role.js';
+import User from '../models/User.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 
 // @desc    Get all roles
@@ -7,7 +8,16 @@ import { successResponse, errorResponse } from '../utils/response.js';
 export const getRoles = async (req, res, next) => {
   try {
     const roles = await Role.find().populate('createdBy', 'name email');
-    return successResponse(res, 200, 'Roles fetched successfully', roles);
+    const roleCounts = await User.aggregate([
+      { $group: { _id: '$role', count: { $sum: 1 } } },
+    ]);
+    const countByRole = new Map(roleCounts.map(({ _id, count }) => [_id, count]));
+    const rolesWithAccurateCounts = roles.map((role) => ({
+      ...role.toObject(),
+      usersCount: countByRole.get(role.name) || 0,
+    }));
+
+    return successResponse(res, 200, 'Roles fetched successfully', rolesWithAccurateCounts);
   } catch (error) {
     next(error);
   }
@@ -49,6 +59,15 @@ export const deleteRole = async (req, res, next) => {
 
     if (!role) {
       return errorResponse(res, 404, 'Role not found');
+    }
+
+    const assignedUsers = await User.countDocuments({ role: role.name });
+    if (assignedUsers > 0) {
+      return errorResponse(
+        res,
+        400,
+        `Cannot delete this role because ${assignedUsers} user${assignedUsers === 1 ? ' is' : 's are'} currently assigned to it`
+      );
     }
 
     // Optional: add a check so only admins or the creator can delete

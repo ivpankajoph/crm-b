@@ -34,6 +34,8 @@ const noteSchema = new mongoose.Schema({
   timestamps: true,
 });
 
+noteSchema.index({ createdBy: 1, isSticky: 1, createdAt: -1 });
+
 const Note = mongoose.model('Note', noteSchema);
 
 export default Note;

@@ -9,7 +9,7 @@ export const getUsersForMessaging = async (req, res) => {
     // Get all users except the current one
     const users = await User.find({ _id: { $ne: req.user._id } }).select(
       '_id name email role profilePicture'
-    );
+    ).lean();
     res.json(users);
   } catch (error) {
     res.status(500).json({ message: 'Server error while fetching users' });
@@ -29,7 +29,10 @@ export const getMessages = async (req, res) => {
         { sender: currentUserId, recipient: userId },
         { sender: userId, recipient: currentUserId },
       ],
-    }).sort({ createdAt: 1 });
+    })
+      .select('sender recipient content read createdAt updatedAt')
+      .sort({ createdAt: 1 })
+      .lean();
 
     res.json(messages);
   } catch (error) {

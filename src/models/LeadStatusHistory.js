@@ -35,6 +35,11 @@ const leadStatusHistorySchema = new mongoose.Schema(
 
 leadStatusHistorySchema.index({ lead: 1, leadModel: 1, changedAt: -1 });
 leadStatusHistorySchema.index({ newStatus: 1, changedAt: -1 });
+leadStatusHistorySchema.index({ changedAt: -1, newStatus: 1, leadModel: 1 });
+leadStatusHistorySchema.index(
+  { changedBy: 1, newStatus: 1, changedAt: 1 },
+  { name: 'lead_history_changedBy_status_changedAt' },
+);
 
 const LeadStatusHistory = mongoose.model('LeadStatusHistory', leadStatusHistorySchema);
 

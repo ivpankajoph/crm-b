@@ -1,10 +1,11 @@
 import express from 'express';
-import { getCustomers, createCustomer, getCustomerById, updateCustomer, deleteCustomer, bulkCreateCustomers } from '../controllers/customerController.js';
+import { getCustomers, getCustomerOptions, createCustomer, getCustomerById, updateCustomer, deleteCustomer, bulkCreateCustomers } from '../controllers/customerController.js';
 import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
 router.post('/bulk', protect, bulkCreateCustomers);
+router.get('/options', protect, getCustomerOptions);
 
 router.route('/')
   .get(protect, getCustomers)

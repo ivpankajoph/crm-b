@@ -1,18 +1,21 @@
 import Event from '../models/Event.js';
 import Notification from '../models/Notification.js';
 import { successResponse, errorResponse } from '../utils/response.js';
+import { escapeRegex, pagedData, paginationMeta, parseDateParam, parsePagination, safeSort } from '../services/listQueryService.js';
+
+const eventVisibility = (userId) => ({
+  $or: [
+    { createdBy: userId },
+    { participant: userId, participantModel: 'User' },
+  ],
+});
 
 // @desc    Get all events
 // @route   GET /api/events
 // @access  Private
 export const getEvents = async (req, res, next) => {
   try {
-    const query = { 
-      $or: [
-        { createdBy: req.user._id },
-        { participant: req.user._id, participantModel: 'User' }
-      ]
-    };
+    const query = eventVisibility(req.user._id);
     
     // Optional: filter by month/year via query params
     const { month, year, status } = req.query;
@@ -31,6 +34,42 @@ export const getEvents = async (req, res, next) => {
       .populate('createdBy', 'name')
       .sort({ date: 1 });
     return successResponse(res, 200, 'Events fetched successfully', events);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getEventsPaged = async (req, res, next) => {
+  try {
+    const { page, limit, skip, search } = parsePagination(req.query);
+    const query = eventVisibility(req.user._id);
+    if (search) query.title = new RegExp(escapeRegex(search), 'i');
+    if (req.query.status && req.query.status !== 'all') query.status = req.query.status;
+    if (req.query.startDate || req.query.endDate) {
+      const startDate = parseDateParam(req.query.startDate);
+      const endDate = parseDateParam(req.query.endDate, { endOfDay: true });
+      if ((req.query.startDate && !startDate) || (req.query.endDate && !endDate)) {
+        return errorResponse(res, 400, 'Invalid event date range');
+      }
+      query.date = {};
+      if (startDate) query.date.$gte = startDate;
+      if (endDate) query.date.$lte = endDate;
+    }
+    const [items, total] = await Promise.all([
+      Event.find(query)
+        .select('-report.transcript')
+        .populate('participant', 'name companyName email')
+        .populate('createdBy', 'name')
+        .sort(safeSort(req.query, ['date', 'createdAt', 'title'], 'date'))
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Event.countDocuments(query),
+    ]);
+    return successResponse(res, 200, 'Events page fetched successfully', pagedData(
+      items,
+      paginationMeta({ page, limit, total }),
+    ));
   } catch (error) {
     next(error);
   }

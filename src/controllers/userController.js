@@ -4,6 +4,8 @@ import Employee from '../models/Employee.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { isAdminUser } from '../utils/hierarchy.js';
 import { logActivity } from '../utils/activity.js';
+import { escapeRegex, pagedData, paginationMeta, parsePagination, safeSort } from '../services/listQueryService.js';
+import { reconcileUserEmployee } from '../services/employeeUserReconciliationService.js';
 
 // @desc    Get all users
 // @route   GET /api/users
@@ -31,10 +33,75 @@ export const getUsers = async (req, res, next) => {
     }
 
     const users = await User.find(filter)
+      .select('-password -plivoEndpointId -plivoEndpointUsername -plivoEndpointPassword')
       .populate('parent', 'name role email')
       .populate('createdBy', 'name role email')
       .sort({ createdAt: -1 });
     return successResponse(res, 200, 'Users fetched successfully', users);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getUsersPaged = async (req, res, next) => {
+  try {
+    const { page, limit, skip, search } = parsePagination(req.query);
+    const filter = {};
+    if (search) {
+      const pattern = new RegExp(escapeRegex(search), 'i');
+      filter.$or = [{ name: pattern }, { email: pattern }, { phone: pattern }, { role: pattern }];
+    }
+    if (req.query.role && req.query.role !== 'all') filter.role = req.query.role;
+    if (req.query.status && req.query.status !== 'all') filter.status = req.query.status;
+    const [items, total] = await Promise.all([
+      User.find(filter)
+        .select('name email phone role parent createdBy status isActive createdAt')
+        .populate('parent', 'name role email')
+        .populate('createdBy', 'name role email')
+        .sort(safeSort(req.query, ['createdAt', 'name', 'role', 'status']))
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      User.countDocuments(filter),
+    ]);
+    return successResponse(res, 200, 'Users page fetched successfully', pagedData(
+      items,
+      paginationMeta({ page, limit, total }),
+    ));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getUserOptions = async (req, res, next) => {
+  try {
+    const purpose = String(req.query.purpose || 'meeting');
+    const search = String(req.query.search || '').trim();
+    const filter = { isActive: true };
+    if (purpose === 'manager') {
+      filter.$or = [
+        { role: { $regex: /^admin$/i } },
+        { role: { $regex: /manager/i } },
+        { role: { $regex: /^team[\s_-]*leader$/i } },
+      ];
+    } else if (purpose === 'attendance' || purpose === 'assignment') {
+      filter.role = { $not: /^admin$/i };
+    }
+    if (search) {
+      const pattern = new RegExp(escapeRegex(search), 'i');
+      const textFilter = [{ name: pattern }, { email: pattern }];
+      if (filter.$or) {
+        filter.$and = [{ $or: filter.$or }, { $or: textFilter }];
+        delete filter.$or;
+      } else {
+        filter.$or = textFilter;
+      }
+    }
+    const users = await User.find(filter)
+      .select('name email phone role parent status isActive')
+      .sort({ name: 1 })
+      .lean();
+    return successResponse(res, 200, 'User options fetched successfully', users);
   } catch (error) {
     next(error);
   }
@@ -84,8 +151,10 @@ export const createUser = async (req, res, next) => {
       designation: role || 'Employee',
       department: 'N/A',
       joiningDate: new Date(),
+      user: user._id,
       createdBy: req.user._id
     });
+    await reconcileUserEmployee(user, req.user._id);
 
     await logActivity({
       user: req.user._id,
@@ -163,8 +232,9 @@ export const updateUser = async (req, res, next) => {
     
     await Employee.findOneAndUpdate(
       { email: oldEmail }, 
-      { firstName, lastName, email: user.email, phone: user.phone || 'N/A', designation: user.role }
+      { firstName, lastName, email: user.email, phone: user.phone || 'N/A', designation: user.role, user: user._id }
     );
+    await reconcileUserEmployee(user, req.user._id);
 
     await logActivity({
       user: req.user._id,

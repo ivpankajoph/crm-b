@@ -3,6 +3,8 @@ import LeadStatusHistory from '../models/LeadStatusHistory.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { isAdminUser } from '../utils/hierarchy.js';
 import { logActivity } from '../utils/activity.js';
+import { invalidateLeadMetricsCaches } from '../services/cacheService.js';
+import { escapeRegex } from '../services/listQueryService.js';
 
 const normalizeAssignees = (assignedTo) => {
   if (!assignedTo) return [];
@@ -24,6 +26,24 @@ export const getCustomers = async (req, res, next) => {
       .sort({ createdAt: -1 });
     
     return successResponse(res, 200, 'Customers fetched successfully', customers);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getCustomerOptions = async (req, res, next) => {
+  try {
+    const search = String(req.query.search || '').trim();
+    const filter = isAdminUser(req.user) ? {} : { assignedTo: req.user._id };
+    if (search) {
+      const pattern = new RegExp(escapeRegex(search), 'i');
+      filter.$or = [{ name: pattern }, { email: pattern }, { phone: pattern }];
+    }
+    const customers = await Customer.find(filter)
+      .select('name email phone company')
+      .sort({ name: 1 })
+      .lean();
+    return successResponse(res, 200, 'Customer options fetched successfully', customers);
   } catch (error) {
     next(error);
   }
@@ -96,6 +116,7 @@ export const createCustomer = async (req, res, next) => {
 
     const populatedCustomer = await Customer.findById(customer._id).populate('createdBy', 'name role email');
 
+    await invalidateLeadMetricsCaches();
     return successResponse(res, 201, 'Customer created successfully', populatedCustomer);
   } catch (error) {
     next(error);
@@ -154,6 +175,7 @@ export const updateCustomer = async (req, res, next) => {
     // populate before return
     customer = await Customer.findById(customer._id).populate('createdBy', 'name role email');
 
+    await invalidateLeadMetricsCaches();
     return successResponse(res, 200, 'Customer updated successfully', customer);
   } catch (error) {
     next(error);
@@ -177,6 +199,7 @@ export const deleteCustomer = async (req, res, next) => {
 
     await customer.deleteOne();
 
+    await invalidateLeadMetricsCaches();
     return successResponse(res, 200, 'Customer deleted successfully');
   } catch (error) {
     next(error);
@@ -212,6 +235,7 @@ export const bulkCreateCustomers = async (req, res, next) => {
 
     const result = await Customer.insertMany(customersToInsert);
 
+    await invalidateLeadMetricsCaches();
     return successResponse(res, 201, `${result.length} Customers imported successfully`, { count: result.length });
   } catch (error) {
     next(error);

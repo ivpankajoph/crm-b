@@ -1,8 +1,10 @@
 import express from 'express';
-import { getTasks, createTask, updateTask, deleteTask } from '../controllers/taskController.js';
+import { getTasks, getTasksPaged, createTask, updateTask, deleteTask } from '../controllers/taskController.js';
 import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
+
+router.get('/paged', protect, getTasksPaged);
 
 router.route('/')
   .get(protect, getTasks)

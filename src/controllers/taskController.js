@@ -1,5 +1,6 @@
 import Task from '../models/Task.js';
 import { successResponse, errorResponse } from '../utils/response.js';
+import { escapeRegex, pagedData, paginationMeta, parseDateParam, parsePagination, safeSort } from '../services/listQueryService.js';
 
 // @desc    Get all tasks for logged in user
 // @route   GET /api/tasks
@@ -8,6 +9,43 @@ export const getTasks = async (req, res, next) => {
   try {
     const tasks = await Task.find({ createdBy: req.user._id }).sort({ createdAt: -1 });
     return successResponse(res, 200, 'Tasks fetched successfully', tasks);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getTasksPaged = async (req, res, next) => {
+  try {
+    const { page, limit, skip, search } = parsePagination(req.query);
+    const filter = { createdBy: req.user._id };
+    if (search) {
+      const pattern = new RegExp(escapeRegex(search), 'i');
+      filter.$or = [{ title: pattern }, { description: pattern }];
+    }
+    if (req.query.status && req.query.status !== 'all') filter.status = req.query.status;
+    if (req.query.priority && req.query.priority !== 'all') filter.priority = req.query.priority;
+    if (req.query.startDate || req.query.endDate) {
+      const startDate = parseDateParam(req.query.startDate);
+      const endDate = parseDateParam(req.query.endDate, { endOfDay: true });
+      if ((req.query.startDate && !startDate) || (req.query.endDate && !endDate)) {
+        return errorResponse(res, 400, 'Invalid task date range');
+      }
+      filter.dueDate = {};
+      if (startDate) filter.dueDate.$gte = startDate;
+      if (endDate) filter.dueDate.$lte = endDate;
+    }
+    const [items, total] = await Promise.all([
+      Task.find(filter)
+        .sort(safeSort(req.query, ['createdAt', 'dueDate', 'title', 'priority']))
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Task.countDocuments(filter),
+    ]);
+    return successResponse(res, 200, 'Tasks page fetched successfully', pagedData(
+      items,
+      paginationMeta({ page, limit, total }),
+    ));
   } catch (error) {
     next(error);
   }

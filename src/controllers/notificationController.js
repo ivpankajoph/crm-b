@@ -1,5 +1,6 @@
 import Notification from '../models/Notification.js';
 import { successResponse, errorResponse } from '../utils/response.js';
+import { escapeRegex, pagedData, paginationMeta, parsePagination, safeSort } from '../services/listQueryService.js';
 
 // @desc    Get all notifications for logged in user
 // @route   GET /api/notifications
@@ -8,6 +9,48 @@ export const getNotifications = async (req, res, next) => {
   try {
     const notifications = await Notification.find({ user: req.user._id }).sort({ createdAt: -1 });
     return successResponse(res, 200, 'Notifications fetched successfully', notifications);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getNotificationsPaged = async (req, res, next) => {
+  try {
+    const { page, limit, skip, search } = parsePagination(req.query);
+    const filter = { user: req.user._id };
+    if (search) {
+      const pattern = new RegExp(escapeRegex(search), 'i');
+      filter.$or = [{ title: pattern }, { message: pattern }];
+    }
+    if (req.query.read === 'true') filter.isRead = true;
+    if (req.query.read === 'false') filter.isRead = false;
+    const [items, total] = await Promise.all([
+      Notification.find(filter)
+        .sort(safeSort(req.query, ['createdAt', 'title']))
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Notification.countDocuments(filter),
+    ]);
+    return successResponse(res, 200, 'Notifications page fetched successfully', pagedData(
+      items,
+      paginationMeta({ page, limit, total }),
+    ));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getNotificationSummary = async (req, res, next) => {
+  try {
+    const requestedLimit = Number.parseInt(req.query.limit, 10);
+    const limit = Math.min(Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : 5, 10);
+    const filter = { user: req.user._id };
+    const [items, unreadCount] = await Promise.all([
+      Notification.find(filter).sort({ createdAt: -1 }).limit(limit).lean(),
+      Notification.countDocuments({ ...filter, isRead: false }),
+    ]);
+    return successResponse(res, 200, 'Notification summary fetched successfully', { items, unreadCount });
   } catch (error) {
     next(error);
   }

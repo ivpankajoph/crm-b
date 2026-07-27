@@ -1,5 +1,6 @@
 import Note from '../models/Note.js';
 import { successResponse, errorResponse } from '../utils/response.js';
+import { escapeRegex, pagedData, paginationMeta, parsePagination, safeSort } from '../services/listQueryService.js';
 
 // @desc    Get all notes for logged in user
 // @route   GET /api/notes
@@ -8,6 +9,42 @@ export const getNotes = async (req, res, next) => {
   try {
     const notes = await Note.find({ createdBy: req.user._id }).sort({ createdAt: -1 });
     return successResponse(res, 200, 'Notes fetched successfully', notes);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getNotesPaged = async (req, res, next) => {
+  try {
+    const { page, limit, skip, search } = parsePagination(req.query);
+    const filter = { createdBy: req.user._id, isSticky: { $ne: true } };
+    if (search) {
+      const pattern = new RegExp(escapeRegex(search), 'i');
+      filter.$or = [{ title: pattern }, { content: pattern }];
+    }
+    const [items, total] = await Promise.all([
+      Note.find(filter)
+        .sort(safeSort(req.query, ['createdAt', 'title']))
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Note.countDocuments(filter),
+    ]);
+    return successResponse(res, 200, 'Notes page fetched successfully', pagedData(
+      items,
+      paginationMeta({ page, limit, total }),
+    ));
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getStickyNotes = async (req, res, next) => {
+  try {
+    const notes = await Note.find({ createdBy: req.user._id, isSticky: true })
+      .sort({ createdAt: -1 })
+      .lean();
+    return successResponse(res, 200, 'Sticky notes fetched successfully', notes);
   } catch (error) {
     next(error);
   }

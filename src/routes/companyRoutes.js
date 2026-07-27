@@ -1,10 +1,12 @@
 import express from 'express';
-import { getCompanies, createCompany, getCompanyById, updateCompany, deleteCompany, bulkCreateCompanies } from '../controllers/companyController.js';
+import { getCompanies, getCompaniesPaged, getCompanyOptions, createCompany, getCompanyById, updateCompany, deleteCompany, bulkCreateCompanies } from '../controllers/companyController.js';
 import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
 router.post('/bulk', protect, bulkCreateCompanies);
+router.get('/paged', protect, getCompaniesPaged);
+router.get('/options', protect, getCompanyOptions);
 
 router.route('/')
   .get(protect, getCompanies)

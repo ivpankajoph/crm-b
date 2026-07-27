@@ -1,0 +1,125 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import mongoose from 'mongoose';
+import Customer from '../../models/Customer.js';
+import Company from '../../models/Company.js';
+import LeadStatusHistory from '../../models/LeadStatusHistory.js';
+import { calculateDashboardMetricsAggregated } from '../dashboardMetricsService.js';
+import { buildLeadStatsMatch, calculateLeadStatsAggregated } from '../leadStatsService.js';
+import { withSafeCache } from '../cacheService.js';
+
+const admin = {
+  _id: new mongoose.Types.ObjectId(),
+  role: 'admin',
+};
+
+test('dashboard aggregation preserves status mapping and null-as-New', { concurrency: false }, async () => {
+  const originalCustomerAggregate = Customer.aggregate;
+  const originalCompanyAggregate = Company.aggregate;
+  try {
+    Customer.aggregate = async () => [
+      { _id: null, count: 2 },
+      { _id: 'Interested', count: 3 },
+    ];
+    Company.aggregate = async () => [
+      { _id: 'New', count: 4 },
+      { _id: 'Converted', count: 1 },
+    ];
+
+    const metrics = await calculateDashboardMetricsAggregated(admin, { period: 'all' });
+    assert.deepEqual(metrics, {
+      new: 6,
+      demoScheduled: 0,
+      interested: 3,
+      notInterested: 0,
+      prospective: 0,
+      committed: 0,
+      converted: 1,
+      followUp: 0,
+    });
+  } finally {
+    Customer.aggregate = originalCustomerAggregate;
+    Company.aggregate = originalCompanyAggregate;
+  }
+});
+
+test('lead aggregation uses grouped counts and lookup visibility without loading ID arrays', { concurrency: false }, async () => {
+  const originals = {
+    customerAggregate: Customer.aggregate,
+    companyAggregate: Company.aggregate,
+    customerCount: Customer.countDocuments,
+    companyCount: Company.countDocuments,
+    historyAggregate: LeadStatusHistory.aggregate,
+    customerFind: Customer.find,
+    companyFind: Company.find,
+  };
+  let customerPipeline;
+  let companyPipeline;
+  let historyPipeline;
+  try {
+    Customer.aggregate = async (pipeline) => {
+      customerPipeline = pipeline;
+      return [{ _id: 'Interested', count: 2 }, { _id: null, count: 1 }];
+    };
+    Company.aggregate = async (pipeline) => {
+      companyPipeline = pipeline;
+      return [{ _id: 'Converted', count: 3 }];
+    };
+    Customer.countDocuments = async () => 1;
+    Company.countDocuments = async () => 2;
+    LeadStatusHistory.aggregate = async (pipeline) => {
+      historyPipeline = pipeline;
+      return [{ _id: 'Follow Up', count: 4 }];
+    };
+    Customer.find = () => { throw new Error('Customer.find must not be used by V2 stats'); };
+    Company.find = () => { throw new Error('Company.find must not be used by V2 stats'); };
+
+    const stats = await calculateLeadStatsAggregated(admin, { period: 'all' });
+    assert.equal(stats.totalLeads, 6);
+    assert.equal(stats.interested, 2);
+    assert.equal(stats.converted, 3);
+    assert.equal(stats.today.demoScheduled, 3);
+    assert.equal(stats.today.followUp, 4);
+    assert.ok(customerPipeline.some((stage) => stage.$group));
+    assert.ok(companyPipeline.some((stage) => stage.$group));
+    assert.equal(historyPipeline.filter((stage) => stage.$lookup).length, 2);
+  } finally {
+    Customer.aggregate = originals.customerAggregate;
+    Company.aggregate = originals.companyAggregate;
+    Customer.countDocuments = originals.customerCount;
+    Company.countDocuments = originals.companyCount;
+    LeadStatusHistory.aggregate = originals.historyAggregate;
+    Customer.find = originals.customerFind;
+    Company.find = originals.companyFind;
+  }
+});
+
+test('lead filter validation rejects incomplete committed values', () => {
+  assert.throws(
+    () => buildLeadStatsMatch(admin, { period: 'month', month: '2026-' }),
+    /Month is required/,
+  );
+  assert.throws(
+    () => buildLeadStatsMatch(admin, { period: 'year', year: '20' }),
+    /Year is required/,
+  );
+  assert.throws(
+    () => buildLeadStatsMatch(admin, { period: 'date', startDate: '', endDate: '' }),
+    /required/,
+  );
+});
+
+test('concurrent identical uncached requests share one producer', async () => {
+  let calls = 0;
+  const producer = async () => {
+    calls += 1;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return { totalLeads: 7 };
+  };
+  const [first, second] = await Promise.all([
+    withSafeCache({ key: 'test:part2:dedupe' }, producer),
+    withSafeCache({ key: 'test:part2:dedupe' }, producer),
+  ]);
+  assert.equal(calls, 1);
+  assert.deepEqual(first.value, second.value);
+});

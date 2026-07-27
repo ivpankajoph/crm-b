@@ -4,6 +4,7 @@ import {
   createLead,
   getLeadStats,
   getAllCombinedLeads,
+  getAllCombinedLeadsPaged,
   getUnifiedLead,
   updateLeadStatus,
   addLeadComment,
@@ -22,6 +23,9 @@ const router = express.Router();
 
 router.route('/stats')
   .get(protect, getLeadStats);
+
+router.route('/all/paged')
+  .get(protect, getAllCombinedLeadsPaged);
 
 router.route('/all')
   .get(protect, getAllCombinedLeads);
