@@ -25,21 +25,10 @@ export const getEmailMarketingConfig = () => ({
     process.env.EMAIL_MARKETING_MAX_PAGE_SIZE,
     100,
   ),
-  sendingEnabled: parseBoolean(
-    process.env.EMAIL_MARKETING_SENDING_ENABLED,
-    false,
-  ),
   domainVerificationEnabled: parseBoolean(
     process.env.EMAIL_MARKETING_DOMAIN_VERIFICATION_ENABLED,
     false,
   ),
-  queueEnabled: parseBoolean(
-    process.env.EMAIL_MARKETING_QUEUE_ENABLED,
-    false,
-  ),
-  redisUrl: process.env.EMAIL_MARKETING_REDIS_URL?.trim() ||
-    process.env.REDIS_URL?.trim() ||
-    '',
   sesRegion:
     process.env.EMAIL_MARKETING_SES_REGION?.trim() ||
     process.env.AWS_REGION?.trim() ||
@@ -97,12 +86,9 @@ export const getPublicEmailMarketingConfig = () => {
       suppressions: true,
       templates: true,
       editorUploads: true,
-      sending: config.sendingEnabled,
+      sending: true,
       domainVerification: config.domainVerificationEnabled,
-      scheduling:
-        config.sendingEnabled &&
-        config.queueEnabled &&
-        Boolean(config.redisUrl),
+      scheduling: true,
       tracking: Boolean(config.publicUrl && config.trackingSecret),
       automations: true,
       analytics: true,

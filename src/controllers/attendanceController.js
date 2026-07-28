@@ -263,7 +263,8 @@ export const getAttendanceReport = async (req, res, next) => {
 
     const attendance = await Attendance.find(query)
       .populate('user', 'name email role')
-      .sort({ date: -1 });
+      .sort({ date: -1 })
+      .lean();
 
     return successResponse(res, 200, 'Attendance report fetched successfully', attendance);
   } catch (error) {

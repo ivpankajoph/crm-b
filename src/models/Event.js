@@ -45,6 +45,11 @@ const eventSchema = new mongoose.Schema({
   timestamps: true,
 });
 
+eventSchema.index({ createdBy: 1, date: -1 });
+eventSchema.index({ createdBy: 1, status: 1, date: -1 });
+eventSchema.index({ participant: 1, date: -1 });
+eventSchema.index({ type: 1, status: 1, createdAt: -1 }, { name: 'event_type_status_createdAt' });
+
 const Event = mongoose.model('Event', eventSchema);
 
 export default Event;

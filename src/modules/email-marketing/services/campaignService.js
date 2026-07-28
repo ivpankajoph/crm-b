@@ -8,6 +8,9 @@ import { buildWorkspaceFilter } from './workspaceService.js';
 const httpError = (statusCode, message) =>
   Object.assign(new Error(message), { statusCode });
 
+export const isCampaignEditableStatus = (status) =>
+  ['draft', 'scheduled', 'paused', 'failed', 'sent'].includes(status);
+
 export const normalizeCampaignPayload = (payload) => {
   const normalized = { ...payload };
   if (Object.hasOwn(payload, 'templateId')) {

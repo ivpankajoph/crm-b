@@ -1,62 +1,89 @@
-import { Queue, Worker } from 'bullmq';
-import IORedis from 'ioredis';
-
-import { getEmailMarketingConfig } from '../config/emailMarketingConfig.js';
 import EmailMarketingCampaign from '../models/EmailMarketingCampaign.js';
 import { dispatchCampaignJob } from './campaignDispatchService.js';
 
-const QUEUE_NAME = 'crm-email-marketing-campaigns';
-const JOB_NAME = 'dispatch-campaign';
-let connection;
-let queue;
-let worker;
-
-const configError = (message) =>
-  Object.assign(new Error(message), { statusCode: 503 });
-
-export const isEmailQueueConfigured = () => {
-  const config = getEmailMarketingConfig();
-  return Boolean(
-    config.sendingEnabled && config.queueEnabled && config.redisUrl,
-  );
-};
-
-const getConnection = () => {
-  const config = getEmailMarketingConfig();
-  if (!isEmailQueueConfigured()) {
-    throw configError(
-      'Campaign queue requires sending, queue, and Redis configuration',
-    );
-  }
-  if (!connection) {
-    connection = new IORedis(config.redisUrl, {
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-    });
-    connection.on('error', (error) => {
-      console.error('[EmailMarketingQueue] Redis error:', error.message);
-    });
-  }
-  return connection;
-};
-
-const getQueue = () => {
-  if (!queue) {
-    queue = new Queue(QUEUE_NAME, {
-      connection: getConnection(),
-      defaultJobOptions: {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 10000 },
-        removeOnComplete: 500,
-        removeOnFail: 1000,
-      },
-    });
-  }
-  return queue;
-};
+const MAX_TIMER_DELAY = 2_147_000_000;
+const MAX_ATTEMPTS = 3;
+const scheduledJobs = new Map();
 
 const jobId = ({ campaignId, runNumber, stepIndex }) =>
   `email-${campaignId}-run-${runNumber}-step-${stepIndex}`;
+
+const clearScheduledJob = (id) => {
+  const job = scheduledJobs.get(id);
+  if (job?.timer) clearTimeout(job.timer);
+  scheduledJobs.delete(id);
+};
+
+const markCampaignFailed = async (data, error) => {
+  await EmailMarketingCampaign.updateOne(
+    {
+      _id: data.campaignId,
+      workspaceId: data.workspaceId,
+    },
+    {
+      $set: {
+        status: 'failed',
+        processing: false,
+        processingStartedAt: null,
+        lastError: error.message,
+      },
+    },
+  );
+};
+
+const runCampaignJob = async (id, data, attempt = 1) => {
+  scheduledJobs.delete(id);
+  try {
+    const next = await dispatchCampaignJob(data);
+    if (next) {
+      await scheduleCampaignDelivery({
+        campaignId: data.campaignId,
+        workspaceId: data.workspaceId,
+        runAt: next.nextRunAt,
+        runNumber: next.runNumber,
+        stepIndex: next.nextStepIndex,
+      });
+    }
+  } catch (error) {
+    console.error(
+      `[EmailMarketingScheduler] Job ${id} attempt ${attempt} failed:`,
+      error.message,
+    );
+    if (attempt < MAX_ATTEMPTS) {
+      scheduleTimer(
+        id,
+        data,
+        new Date(Date.now() + 10_000 * 2 ** (attempt - 1)),
+        attempt + 1,
+      );
+      return;
+    }
+    await markCampaignFailed(data, error);
+  }
+};
+
+const scheduleTimer = (id, data, runAt, attempt = 1) => {
+  clearScheduledJob(id);
+  const targetTime = new Date(runAt).getTime();
+  const arm = () => {
+    const remaining = targetTime - Date.now();
+    if (remaining > MAX_TIMER_DELAY) {
+      const timer = setTimeout(arm, MAX_TIMER_DELAY);
+      scheduledJobs.set(id, { timer, data, runAt: new Date(targetTime) });
+      return;
+    }
+    const timer = setTimeout(
+      () => void runCampaignJob(id, data, attempt),
+      Math.max(0, remaining),
+    );
+    scheduledJobs.set(id, { timer, data, runAt: new Date(targetTime) });
+  };
+  arm();
+};
+
+// Campaign scheduling is always available through the backend-managed scheduler.
+// MongoDB stores the durable schedule and startEmailMarketingRuntime restores it.
+export const isEmailQueueConfigured = () => true;
 
 export const scheduleCampaignDelivery = async ({
   campaignId,
@@ -65,85 +92,21 @@ export const scheduleCampaignDelivery = async ({
   runNumber = 1,
   stepIndex = -1,
 }) => {
-  const campaignQueue = getQueue();
-  const id = jobId({ campaignId, runNumber, stepIndex });
-  const existing = await campaignQueue.getJob(id);
-  if (existing) await existing.remove().catch(() => undefined);
-  await campaignQueue.add(
-    JOB_NAME,
-    { campaignId, workspaceId, runNumber, stepIndex },
-    {
-      jobId: id,
-      delay: Math.max(0, new Date(runAt).getTime() - Date.now()),
-    },
-  );
+  const data = { campaignId, workspaceId, runNumber, stepIndex };
+  const id = jobId(data);
+  scheduleTimer(id, data, runAt);
   return id;
 };
 
 export const cancelCampaignDelivery = async (campaign) => {
-  if (!isEmailQueueConfigured()) return;
-  const campaignQueue = getQueue();
-  const jobs = await campaignQueue.getJobs([
-    'delayed',
-    'waiting',
-    'prioritized',
-    'paused',
-  ]);
-  await Promise.all(
-    jobs
-      .filter((job) => String(job.data.campaignId) === String(campaign._id))
-      .map((job) => job.remove().catch(() => undefined)),
-  );
+  for (const [id, job] of scheduledJobs.entries()) {
+    if (String(job.data.campaignId) === String(campaign._id)) {
+      clearScheduledJob(id);
+    }
+  }
 };
 
 export const startEmailMarketingRuntime = async () => {
-  if (!isEmailQueueConfigured()) return false;
-  if (!worker) {
-    worker = new Worker(
-      QUEUE_NAME,
-      async (job) => {
-        if (job.name !== JOB_NAME) return null;
-        const next = await dispatchCampaignJob(job.data);
-        if (next) {
-          await scheduleCampaignDelivery({
-            campaignId: job.data.campaignId,
-            workspaceId: job.data.workspaceId,
-            runAt: next.nextRunAt,
-            runNumber: next.runNumber,
-            stepIndex: next.nextStepIndex,
-          });
-        }
-        return next;
-      },
-      {
-        connection: getConnection(),
-        concurrency: Math.max(1, getEmailMarketingConfig().sendConcurrency),
-      },
-    );
-    worker.on('failed', async (job, error) => {
-      console.error(
-        `[EmailMarketingQueue] Job ${job?.id || 'unknown'} failed:`,
-        error.message,
-      );
-      if (job && job.attemptsMade >= Number(job.opts.attempts || 1)) {
-        await EmailMarketingCampaign.updateOne(
-          {
-            _id: job.data.campaignId,
-            workspaceId: job.data.workspaceId,
-          },
-          {
-            $set: {
-              status: 'failed',
-              processing: false,
-              processingStartedAt: null,
-              lastError: error.message,
-            },
-          },
-        );
-      }
-    });
-  }
-
   const scheduled = await EmailMarketingCampaign.find({
     status: { $in: ['scheduled', 'active'] },
     scheduledAt: { $ne: null },
@@ -161,22 +124,11 @@ export const startEmailMarketingRuntime = async () => {
     });
   }
   console.log(
-    `[EmailMarketingQueue] Runtime started; restored ${scheduled.length} job(s)`,
+    `[EmailMarketingScheduler] Runtime started; restored ${scheduled.length} job(s)`,
   );
   return true;
 };
 
 export const stopEmailMarketingRuntime = async () => {
-  if (worker) {
-    await worker.close();
-    worker = null;
-  }
-  if (queue) {
-    await queue.close();
-    queue = null;
-  }
-  if (connection) {
-    await connection.quit();
-    connection = null;
-  }
+  for (const id of [...scheduledJobs.keys()]) clearScheduledJob(id);
 };

@@ -26,9 +26,6 @@ export const getSesClient = () => {
 
 export const assertSesSendingConfigured = () => {
   const config = getEmailMarketingConfig();
-  if (!config.sendingEnabled) {
-    throw configurationError('Email sending is disabled');
-  }
   if (!config.publicUrl || !config.trackingSecret) {
     throw configurationError(
       'Email Marketing public URL and tracking secret are required',

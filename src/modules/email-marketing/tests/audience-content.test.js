@@ -125,6 +125,67 @@ test('template validation supports all three editor types', () => {
   }
 });
 
+test('template validation supplies hidden metadata defaults', () => {
+  const result = createTemplateSchema.safeParse({
+    body: {
+      name: 'Name-only template',
+      type: 'visual',
+      htmlContent: '',
+      blocks: [],
+    },
+    params: {},
+    query: {},
+  });
+
+  assert.equal(result.success, true);
+  assert.equal(result.data.body.subject, '');
+  assert.equal(result.data.body.preheader, '');
+  assert.equal(result.data.body.category, 'General');
+  assert.equal(result.data.body.status, 'draft');
+});
+
+test('template validation accepts the complete visual block catalog', () => {
+  const blockTypes = [
+    'heading',
+    'text',
+    'image',
+    'video',
+    'button',
+    'dynamic',
+    'logo',
+    'social',
+    'html',
+    'divider',
+    'product',
+    'navigation',
+    'spacer',
+  ];
+  const result = createTemplateSchema.safeParse({
+    body: {
+      name: 'Complete builder',
+      type: 'visual',
+      blocks: blockTypes.map((type) => ({
+        type,
+        content: type === 'html' ? '<p>HTML block</p>' : type,
+        href: 'https://example.com',
+        imageUrl: 'https://example.com/product.jpg',
+        subtitle: 'Description',
+        price: '₹999',
+        buttonText: 'View product',
+        items: [{ label: 'Home', url: 'https://example.com' }],
+      })),
+    },
+    params: {},
+    query: {},
+  });
+
+  assert.equal(result.success, true);
+  assert.deepEqual(
+    result.data.body.blocks.map((block) => block.type),
+    blockTypes,
+  );
+});
+
 test('partial template updates do not reset editor content or status', () => {
   const result = updateTemplateSchema.safeParse({
     body: { subject: 'Updated subject' },

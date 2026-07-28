@@ -1,46 +1,87 @@
 import Employee from '../models/Employee.js';
 import User from '../models/User.js';
+import Role from '../models/Role.js';
+import mongoose from 'mongoose';
 import { successResponse, errorResponse } from '../utils/response.js';
+import { escapeRegex, pagedData, paginationMeta, parsePagination, safeSort } from '../services/listQueryService.js';
 
 const populateFields = [
   { path: 'manager', select: 'name email role' },
+  { path: 'user', select: 'name email role parent status isActive' },
   { path: 'createdBy', select: 'name email role' },
 ];
 
 const normalizeDate = (value) => (value ? new Date(value) : undefined);
-
-const splitName = (name = '') => {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  return {
-    firstName: parts[0] || 'Employee',
-    lastName: parts.length > 1 ? parts.slice(1).join(' ') : '-',
-  };
+const normalizeRole = (value = '') => value.toString().trim().toLowerCase().replace(/[\s-]+/g, '_');
+const isManagerRole = (role) => {
+  const normalized = normalizeRole(role);
+  return normalized === 'admin'
+    || normalized.includes('manager')
+    || normalized === 'team_leader';
 };
 
-const syncMissingUserEmployees = async (fallbackCreatedBy) => {
-  const users = await User.find({
-    isActive: true,
-    role: { $not: /^admin$/i },
-  }).lean();
+const resolveSelectedRole = async (requestedRole, currentRole = '') => {
+  const roleName = requestedRole?.toString().trim();
+  if (!roleName) {
+    return currentRole || 'employee';
+  }
 
-  await Promise.all(users.map(async (user) => {
-    const existingEmployee = await Employee.findOne({ email: user.email }).select('_id').lean();
-    if (existingEmployee) return;
+  if (currentRole && roleName === currentRole) {
+    return currentRole;
+  }
 
-    const { firstName, lastName } = splitName(user.name);
-    await Employee.create({
-      firstName,
-      lastName,
-      email: user.email,
-      phone: user.phone || 'N/A',
-      designation: user.role || 'Employee',
-      department: user.role || 'General',
-      joiningDate: user.createdAt || new Date(),
-      status: user.status === 'inactive' ? 'Inactive' : 'Active',
-      manager: user.parent || null,
-      createdBy: user.createdBy || fallbackCreatedBy,
-    });
+  const role = await Role.findOne({ name: roleName }).select('name').lean();
+  return role?.name || null;
+};
+
+const syncRoleUserCounts = async (...roleNames) => {
+  const uniqueRoleNames = [...new Set(roleNames.filter(Boolean))];
+  await Promise.all(uniqueRoleNames.map(async (roleName) => {
+    const usersCount = await User.countDocuments({ role: roleName });
+    await Role.updateOne({ name: roleName }, { $set: { usersCount } });
   }));
+};
+
+const validateManager = async (managerId, currentUserId = null) => {
+  if (!managerId || managerId === 'none') return { manager: null };
+  if (!mongoose.isValidObjectId(managerId)) {
+    return { error: 'Selected manager is invalid' };
+  }
+
+  const manager = await User.findById(managerId)
+    .select('_id role parent status isActive')
+    .lean();
+
+  if (!manager || manager.isActive === false || manager.status === 'inactive') {
+    return { error: 'Selected manager is not an active user' };
+  }
+
+  if (!isManagerRole(manager.role)) {
+    return { error: 'Selected user is not eligible to be a manager' };
+  }
+
+  if (currentUserId && manager._id.toString() === currentUserId.toString()) {
+    return { error: 'A user cannot report to themselves' };
+  }
+
+  if (currentUserId) {
+    const visited = new Set();
+    let ancestorId = manager.parent;
+
+    while (ancestorId) {
+      const normalizedId = ancestorId.toString();
+      if (normalizedId === currentUserId.toString()) {
+        return { error: 'This manager assignment would create a circular reporting hierarchy' };
+      }
+      if (visited.has(normalizedId)) break;
+      visited.add(normalizedId);
+
+      const ancestor = await User.findById(ancestorId).select('parent').lean();
+      ancestorId = ancestor?.parent || null;
+    }
+  }
+
+  return { manager: manager._id };
 };
 
 const buildEmployeePayload = (body) => ({
@@ -67,8 +108,6 @@ const buildEmployeePayload = (body) => ({
 
 export const getEmployees = async (req, res, next) => {
   try {
-    await syncMissingUserEmployees(req.user._id);
-
     const employees = await Employee.find()
       .populate(populateFields)
       .sort({ createdAt: -1 });
@@ -94,11 +133,25 @@ export const getEmployeeById = async (req, res, next) => {
 };
 
 export const createEmployee = async (req, res, next) => {
+  let createdUser = null;
+  let createdEmployee = null;
+  let createdRoleName = null;
   try {
-    const { email, firstName, lastName, password } = req.body;
+    const { email, firstName, lastName, password, role: requestedRole } = req.body;
     
     if (!password) {
       return errorResponse(res, 400, 'Password is required to create a login account for the employee');
+    }
+
+    const selectedRole = await resolveSelectedRole(requestedRole);
+    if (!selectedRole) {
+      return errorResponse(res, 400, 'Selected role is invalid or no longer exists');
+    }
+    createdRoleName = selectedRole;
+
+    const managerResult = await validateManager(req.body.manager);
+    if (managerResult.error) {
+      return errorResponse(res, 400, managerResult.error);
     }
 
     const existingEmployee = await Employee.findOne({ email });
@@ -112,24 +165,77 @@ export const createEmployee = async (req, res, next) => {
     }
 
     // Create User Login Account
-    const user = await User.create({
+    createdUser = await User.create({
       name: `${firstName} ${lastName}`.trim(),
       email,
       password,
-      role: 'employee',
+      role: selectedRole,
       phone: req.body.phone,
-      parent: req.body.manager || null,
+      parent: managerResult.manager,
       createdBy: req.user._id,
-      isActive: true
+      status: req.body.status === 'Inactive' || req.body.status === 'Terminated' ? 'inactive' : 'active',
+      isActive: req.body.status !== 'Inactive' && req.body.status !== 'Terminated',
     });
 
-    const employee = await Employee.create({
-      ...buildEmployeePayload(req.body),
+    createdEmployee = await Employee.create({
+      ...buildEmployeePayload({ ...req.body, manager: managerResult.manager }),
+      user: createdUser._id,
       createdBy: req.user._id,
     });
 
-    const populatedEmployee = await Employee.findById(employee._id).populate(populateFields);
+    await syncRoleUserCounts(selectedRole);
+
+    const populatedEmployee = await Employee.findById(createdEmployee._id).populate(populateFields);
     return successResponse(res, 201, 'Employee and User created successfully', populatedEmployee);
+  } catch (error) {
+    if (createdEmployee?._id) {
+      await Employee.deleteOne({ _id: createdEmployee._id }).catch(() => {});
+    }
+    if (createdUser?._id) {
+      await User.deleteOne({ _id: createdUser._id }).catch(() => {});
+    }
+    if (createdRoleName) {
+      await syncRoleUserCounts(createdRoleName).catch(() => {});
+    }
+    next(error);
+  }
+};
+
+export const getEmployeesPaged = async (req, res, next) => {
+  try {
+    const { page, limit, skip, search } = parsePagination(req.query);
+    const filter = {};
+    if (search) {
+      const pattern = new RegExp(escapeRegex(search), 'i');
+      filter.$or = [
+        { firstName: pattern },
+        { lastName: pattern },
+        { email: pattern },
+        { employeeId: pattern },
+        { designation: pattern },
+      ];
+    }
+    if (req.query.status && req.query.status !== 'all') filter.status = req.query.status;
+    if (req.query.department && req.query.department !== 'all') filter.department = req.query.department;
+
+    const [items, total, departments] = await Promise.all([
+      Employee.find(filter)
+        .select('employeeId firstName lastName email phone designation department employmentType joiningDate workLocation status manager user createdBy createdAt')
+        .populate({ path: 'manager', select: 'name email role' })
+        .populate({ path: 'user', select: 'name email role parent status isActive' })
+        .populate({ path: 'createdBy', select: 'name email role' })
+        .sort(safeSort(req.query, ['createdAt', 'firstName', 'joiningDate']))
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Employee.countDocuments(filter),
+      Employee.distinct('department'),
+    ]);
+    return successResponse(res, 200, 'Employees page fetched successfully', pagedData(
+      items,
+      paginationMeta({ page, limit, total }),
+      { departments: departments.filter(Boolean).sort() },
+    ));
   } catch (error) {
     next(error);
   }
@@ -143,31 +249,65 @@ export const updateEmployee = async (req, res, next) => {
       return errorResponse(res, 404, 'Employee not found');
     }
 
-    if (req.body.email && req.body.email !== employee.email) {
+    const oldEmail = employee.email;
+    const linkedUser = employee.user
+      ? await User.findById(employee.user)
+      : await User.findOne({ email: oldEmail });
+
+    if (req.body.email && req.body.email !== oldEmail) {
       const emailExists = await Employee.findOne({ email: req.body.email });
       if (emailExists) {
         return errorResponse(res, 400, 'Employee with this email already exists');
       }
+      const userEmailExists = await User.findOne({
+        email: req.body.email,
+        ...(linkedUser?._id ? { _id: { $ne: linkedUser._id } } : {}),
+      });
+      if (userEmailExists) {
+        return errorResponse(res, 400, 'User with this email already exists');
+      }
+    }
+
+    const currentRole = linkedUser?.role || 'employee';
+    const selectedRole = await resolveSelectedRole(req.body.role, currentRole);
+    if (!selectedRole) {
+      return errorResponse(res, 400, 'Selected role is invalid or no longer exists');
+    }
+
+    const managerResult = await validateManager(req.body.manager, linkedUser?._id);
+    if (managerResult.error) {
+      return errorResponse(res, 400, managerResult.error);
     }
 
     const updatedEmployee = await Employee.findByIdAndUpdate(
       req.params.id,
-      buildEmployeePayload(req.body),
+      {
+        ...buildEmployeePayload({ ...req.body, manager: managerResult.manager }),
+        ...(linkedUser?._id ? { user: linkedUser._id } : {}),
+      },
       { new: true, runValidators: true }
     ).populate(populateFields);
 
-    await User.findOneAndUpdate(
-      { email: updatedEmployee.email },
-      {
-        name: `${updatedEmployee.firstName} ${updatedEmployee.lastName}`.trim(),
-        phone: updatedEmployee.phone,
-        parent: updatedEmployee.manager || null,
-        status: updatedEmployee.status === 'Inactive' || updatedEmployee.status === 'Terminated' ? 'inactive' : 'active',
-        isActive: updatedEmployee.status !== 'Inactive' && updatedEmployee.status !== 'Terminated',
-      }
-    );
+    if (linkedUser) {
+      const oldRole = linkedUser.role;
+      linkedUser.name = `${updatedEmployee.firstName} ${updatedEmployee.lastName}`.trim();
+      linkedUser.email = updatedEmployee.email;
+      linkedUser.phone = updatedEmployee.phone;
+      linkedUser.parent = managerResult.manager;
+      linkedUser.role = selectedRole;
+      linkedUser.status = updatedEmployee.status === 'Inactive' || updatedEmployee.status === 'Terminated'
+        ? 'inactive'
+        : 'active';
+      linkedUser.isActive = linkedUser.status === 'active';
+      await linkedUser.save();
 
-    return successResponse(res, 200, 'Employee updated successfully', updatedEmployee);
+      if (oldRole !== selectedRole) {
+        await syncRoleUserCounts(oldRole, selectedRole);
+      }
+    }
+
+    const populatedEmployee = await Employee.findById(updatedEmployee._id).populate(populateFields);
+    return successResponse(res, 200, 'Employee updated successfully', populatedEmployee);
   } catch (error) {
     next(error);
   }

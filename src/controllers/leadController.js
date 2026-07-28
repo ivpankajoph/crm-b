@@ -12,6 +12,10 @@ import { logActivity } from '../utils/activity.js';
 import Setting from '../models/Setting.js';
 import { createPlivoBridge, prepareBrowserCall } from './telephonyController.js';
 import { normalizePhone } from '../services/plivoService.js';
+import { getCachedLeadStats } from '../services/leadStatsService.js';
+import { invalidateLeadMetricsCaches } from '../services/cacheService.js';
+import { escapeRegex, pagedData, paginationMeta, parsePagination } from '../services/listQueryService.js';
+import { parseLeadStatusDate } from '../utils/leadStatusDate.js';
 
 const STATUS_ALIASES = {
   demo_scheduled: 'Demo Scheduled',
@@ -22,8 +26,6 @@ const STATUS_ALIASES = {
   converted: 'Converted',
   not_interested: 'Not Interested',
 };
-
-const TRACKED_STATUSES = ['Demo Scheduled', 'Follow Up', 'Prospective', 'Committed', 'Converted', 'Not Interested'];
 
 const normalizeStatus = (status) => STATUS_ALIASES[status?.toString().trim().toLowerCase()] || status;
 
@@ -136,14 +138,6 @@ const findUnifiedLeadForUser = async (type, id, user, populate = false) => {
   return dbQuery;
 };
 
-const dateRangeForToday = () => {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  const end = new Date();
-  end.setHours(23, 59, 59, 999);
-  return { start, end };
-};
-
 const analyzeTranscript = (transcriptText = '') => {
   const transcript = transcriptText.trim();
   if (!transcript) {
@@ -199,143 +193,22 @@ export const getLeads = async (req, res, next) => {
 // @route   GET /api/leads/stats
 // @access  Private
 export const getLeadStats = async (req, res, next) => {
+  const startedAt = Date.now();
   try {
-    const { period = 'today', startDate: startDateParam, endDate: endDateParam, month, year } = req.query;
-    let matchStage = buildLeadVisibilityQuery(req.user);
-
-    const now = new Date();
-    let startDate = new Date(now);
-    let endDate = new Date(now);
-
-    const applyDateRange = (start, end) => {
-      if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-        return false;
-      }
-      start.setHours(0, 0, 0, 0);
-      end.setHours(23, 59, 59, 999);
-      matchStage.createdAt = { $gte: start, $lte: end };
-      return true;
+    const filters = {
+      period: req.query.period || 'today',
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
+      month: req.query.month,
+      year: req.query.year,
     };
-
-    if (period === 'today') {
-      applyDateRange(startDate, endDate);
-    } else if (period === 'date') {
-      if (!startDateParam || !endDateParam) {
-        return errorResponse(res, 400, 'Start date and end date are required');
-      }
-      applyDateRange(new Date(startDateParam), new Date(endDateParam));
-    } else if (period === 'month') {
-      if (!month || !/^\d{4}-\d{2}$/.test(month)) {
-        return errorResponse(res, 400, 'Month is required');
-      }
-      const [selectedYear, selectedMonth] = month.split('-').map(Number);
-      startDate = new Date(selectedYear, selectedMonth - 1, 1);
-      endDate = new Date(selectedYear, selectedMonth, 0);
-      applyDateRange(startDate, endDate);
-    } else if (period === 'year') {
-      const selectedYear = Number(year);
-      if (!selectedYear || selectedYear < 1900) {
-        return errorResponse(res, 400, 'Year is required');
-      }
-      startDate = new Date(selectedYear, 0, 1);
-      endDate = new Date(selectedYear, 11, 31);
-      applyDateRange(startDate, endDate);
-    }
-
-    const defaultStats = {
-      totalLeads: 0,
-      demoScheduled: 0,
-      interested: 0,
-      notInterested: 0,
-      prospective: 0,
-      committed: 0,
-      converted: 0,
-      followUp: 0,
-      today: {
-        demoScheduled: 0,
-        followUp: 0,
-        prospective: 0,
-        committed: 0,
-        converted: 0,
-        notInterested: 0,
-      },
-    };
-
-    let resultStats = { ...defaultStats };
-
-    const countByStatus = async (status) => {
-      const [customerCount, companyCount] = await Promise.all([
-        Customer.countDocuments({ ...matchStage, leadStatus: status }),
-        Company.countDocuments({ ...matchStage, leadStatus: status }),
-      ]);
-      return customerCount + companyCount;
-    };
-
-    const [
-      customerCount,
-      companyCount,
-      demoScheduled,
-      interested,
-      notInterested,
-      prospective,
-      committed,
-      converted,
-      followUp,
-    ] = await Promise.all([
-      Customer.countDocuments(matchStage),
-      Company.countDocuments(matchStage),
-      countByStatus('Demo Scheduled'),
-      countByStatus('Interested'),
-      countByStatus('Not Interested'),
-      countByStatus('Prospective'),
-      countByStatus('Committed'),
-      countByStatus('Converted'),
-      countByStatus('Follow Up'),
-    ]);
-
-    resultStats.totalLeads = customerCount + companyCount;
-    resultStats.demoScheduled = demoScheduled;
-    resultStats.interested = interested;
-    resultStats.notInterested = notInterested;
-    resultStats.prospective = prospective;
-    resultStats.committed = committed;
-    resultStats.converted = converted;
-    resultStats.followUp = followUp;
-
-    const { start, end } = dateRangeForToday();
-    const visibleLeadIds = [
-      ...(await Customer.find(matchStage).select('_id').lean()).map((lead) => lead._id),
-      ...(await Company.find(matchStage).select('_id').lean()).map((lead) => lead._id),
-    ];
-
-    const [todayDemo, todayHistory] = await Promise.all([
-      Promise.all([
-        Customer.countDocuments({ ...matchStage, scheduledDateTime: { $gte: start, $lte: end } }),
-        Company.countDocuments({ ...matchStage, scheduledDateTime: { $gte: start, $lte: end } }),
-      ]),
-      LeadStatusHistory.aggregate([
-        {
-          $match: {
-            lead: { $in: visibleLeadIds },
-            newStatus: { $in: TRACKED_STATUSES },
-            changedAt: { $gte: start, $lte: end },
-          },
-        },
-        { $group: { _id: '$newStatus', count: { $sum: 1 } } },
-      ]),
-    ]);
-
-    resultStats.today.demoScheduled = todayDemo[0] + todayDemo[1];
-    todayHistory.forEach((item) => {
-      if (item._id === 'Follow Up') resultStats.today.followUp = item.count;
-      if (item._id === 'Prospective') resultStats.today.prospective = item.count;
-      if (item._id === 'Committed') resultStats.today.committed = item.count;
-      if (item._id === 'Converted') resultStats.today.converted = item.count;
-      if (item._id === 'Not Interested') resultStats.today.notInterested = item.count;
-    });
-
-    return successResponse(res, 200, 'Stats fetched', resultStats);
+    const { value, cacheStatus } = await getCachedLeadStats(req.user, filters);
+    const duration = Date.now() - startedAt;
+    res.setHeader('Server-Timing', `lead-stats;dur=${duration};desc="cache ${cacheStatus}"`);
+    res.setHeader('X-Cache', cacheStatus);
+    return successResponse(res, 200, 'Stats fetched', value);
   } catch (error) {
+    if (error.statusCode === 400) return errorResponse(res, 400, error.message);
     next(error);
   }
 };
@@ -387,6 +260,135 @@ export const getAllCombinedLeads = async (req, res, next) => {
     unifiedLeads.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
     return successResponse(res, 200, 'Combined leads fetched', unifiedLeads);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get paginated combined leads using a database-side union
+// @route   GET /api/leads/all/paged
+// @access  Private
+export const getAllCombinedLeadsPaged = async (req, res, next) => {
+  try {
+    const { page, limit, skip, search } = parsePagination(req.query);
+    const visibility = buildLeadVisibilityQuery(req.user);
+    const customerMatch = { ...visibility };
+    const companyMatch = { ...visibility };
+    const status = req.query.status;
+    if (status && status !== 'All') {
+      customerMatch.leadStatus = status;
+      companyMatch.leadStatus = status;
+    }
+    if (req.query.followUp === 'upcoming') {
+      customerMatch.leadStatus = 'Follow Up';
+      companyMatch.leadStatus = 'Follow Up';
+    }
+    if (search) {
+      const pattern = new RegExp(escapeRegex(search), 'i');
+      customerMatch.$or = [{ name: pattern }, { email: pattern }, { phone: pattern }, { company: pattern }];
+      companyMatch.$or = [{ companyName: pattern }, { customerName: pattern }, { email1: pattern }, { mobileNo: pattern }];
+    }
+    const now = new Date();
+    let dateStart;
+    if (req.query.date === 'Today') {
+      dateStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    } else if (req.query.date === 'This Week') {
+      dateStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay());
+    } else if (req.query.date === 'This Month') {
+      dateStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    }
+    if (dateStart) {
+      customerMatch.createdAt = { $gte: dateStart };
+      companyMatch.createdAt = { $gte: dateStart };
+    }
+    const type = req.query.type;
+    if (type === 'Company') customerMatch._id = null;
+    if (type === 'Customer') companyMatch._id = null;
+
+    const result = await Customer.aggregate([
+      { $match: customerMatch },
+      {
+        $project: {
+          name: '$name',
+          email: { $ifNull: ['$email', ''] },
+          phone: { $ifNull: ['$phone', ''] },
+          type: { $literal: 'Customer' },
+          leadStatus: { $ifNull: ['$leadStatus', 'New'] },
+          followTypeDate: '$scheduledDateTime',
+          createdById: '$createdBy',
+          assignedToIds: { $ifNull: ['$assignedTo', []] },
+          commentsCount: { $size: { $ifNull: ['$comments', []] } },
+          createdAt: 1,
+        },
+      },
+      {
+        $unionWith: {
+          coll: Company.collection.name,
+          pipeline: [
+            { $match: companyMatch },
+            {
+              $project: {
+                name: '$companyName',
+                email: { $ifNull: ['$email1', ''] },
+                phone: { $ifNull: ['$mobileNo', { $ifNull: ['$phoneNo', ''] }] },
+                type: { $literal: 'Company' },
+                leadStatus: { $ifNull: ['$leadStatus', 'New'] },
+                followTypeDate: { $ifNull: ['$scheduledDateTime', '$followTypeDate'] },
+                createdById: '$createdBy',
+                assignedToIds: { $ifNull: ['$assignedTo', []] },
+                commentsCount: { $size: { $ifNull: ['$comments', []] } },
+                createdAt: 1,
+              },
+            },
+          ],
+        },
+      },
+      {
+        $facet: {
+          items: [
+            { $sort: { createdAt: -1, _id: -1 } },
+            { $skip: skip },
+            { $limit: limit },
+            { $lookup: { from: User.collection.name, localField: 'createdById', foreignField: '_id', as: 'createdByUser' } },
+            { $lookup: { from: User.collection.name, localField: 'assignedToIds', foreignField: '_id', as: 'assignedToUsers' } },
+            {
+              $project: {
+                name: 1,
+                email: 1,
+                phone: 1,
+                type: 1,
+                leadStatus: 1,
+                followTypeDate: 1,
+                commentsCount: 1,
+                createdAt: 1,
+                createdBy: { $ifNull: [{ $arrayElemAt: ['$createdByUser.name', 0] }, 'System'] },
+                assignedTo: {
+                  $cond: [
+                    { $gt: [{ $size: '$assignedToUsers' }, 0] },
+                    {
+                      $reduce: {
+                        input: '$assignedToUsers.name',
+                        initialValue: '',
+                        in: { $concat: ['$$value', { $cond: [{ $eq: ['$$value', ''] }, '', ', '] }, '$$this'] },
+                      },
+                    },
+                    '---',
+                  ],
+                },
+              },
+            },
+          ],
+          total: [{ $count: 'count' }],
+        },
+      },
+    ]);
+
+    const items = result[0]?.items || [];
+    const total = result[0]?.total[0]?.count || 0;
+    return successResponse(res, 200, 'Combined leads page fetched', pagedData(
+      items,
+      paginationMeta({ page, limit, total }),
+    ));
   } catch (error) {
     next(error);
   }
@@ -451,6 +453,7 @@ export const createLead = async (req, res, next) => {
 
     const populatedLead = await Lead.findById(lead._id).populate('createdBy', 'name role email').populate('assignedTo', 'name role email');
 
+    await invalidateLeadMetricsCaches();
     return successResponse(res, 201, 'Lead created successfully', populatedLead);
   } catch (error) {
     next(error);
@@ -481,10 +484,17 @@ export const getUnifiedLead = async (req, res, next) => {
 export const updateLeadStatus = async (req, res, next) => {
   try {
     const { type, id } = req.params;
-    const { status, scheduledDateTime } = req.body;
+    const { status, scheduledDateTime, statusDate } = req.body;
     const newStatus = normalizeStatus(status);
     const Model = getLeadModel(type);
     if (!Model || !newStatus) return errorResponse(res, 400, 'Invalid lead type or status');
+
+    let statusChangedAt;
+    try {
+      statusChangedAt = parseLeadStatusDate(statusDate);
+    } catch (error) {
+      return errorResponse(res, 400, error.message);
+    }
     
     const existingLead = await findUnifiedLeadForUser(type, id, req.user);
     if (!existingLead) return res.status(404).json({ success: false, message: 'Lead not found' });
@@ -492,6 +502,7 @@ export const updateLeadStatus = async (req, res, next) => {
     const statusField = getLeadStatusField(type);
     const oldStatus = existingLead[statusField];
     const update = { [statusField]: newStatus };
+    if (oldStatus !== newStatus) update.leadStatusChangedAt = statusChangedAt;
     if (scheduledDateTime) update.scheduledDateTime = scheduledDateTime;
     if (newStatus === 'Demo Scheduled' && scheduledDateTime) update.followTypeDate = scheduledDateTime;
 
@@ -504,6 +515,7 @@ export const updateLeadStatus = async (req, res, next) => {
         oldStatus,
         newStatus,
         changedBy: req.user._id,
+        changedAt: statusChangedAt,
       });
 
       await logActivity({
@@ -512,10 +524,11 @@ export const updateLeadStatus = async (req, res, next) => {
         description: `Changed ${getLeadName(lead)} from ${oldStatus || 'blank'} to ${newStatus}`,
         entityType: type,
         entityId: lead._id,
-        metadata: { oldStatus, newStatus },
+        metadata: { oldStatus, newStatus, statusDate: statusChangedAt.toISOString() },
       });
     }
 
+    await invalidateLeadMetricsCaches();
     return successResponse(res, 200, 'Status updated', lead);
   } catch (error) {
     next(error);
@@ -586,6 +599,7 @@ export const assignLead = async (req, res, next) => {
       user: assignedTo
     });
 
+    await invalidateLeadMetricsCaches();
     return successResponse(res, 200, 'Lead assigned successfully', lead);
   } catch (error) {
     next(error);
@@ -641,6 +655,7 @@ export const bulkAssignLeads = async (req, res, next) => {
       }
     }
 
+    if (updatedLeads.length > 0) await invalidateLeadMetricsCaches();
     return successResponse(res, 200, `${updatedLeads.length} leads assigned successfully`, {
       updatedCount: updatedLeads.length,
     });

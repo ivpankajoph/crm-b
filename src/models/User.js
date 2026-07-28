@@ -57,6 +57,7 @@ const userSchema = new mongoose.Schema(
 
 userSchema.index({ parent: 1 });
 userSchema.index({ role: 1, status: 1 });
+userSchema.index({ createdAt: -1 });
 
 userSchema.pre('validate', function () {
   this.isActive = this.status !== 'inactive';

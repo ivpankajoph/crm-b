@@ -7,16 +7,46 @@ const objectId = z
 const block = z
   .object({
     id: z.string().trim().min(1).max(100).optional(),
-    type: z.enum(['heading', 'text', 'button', 'image', 'divider', 'spacer']),
+    type: z.enum([
+      'heading',
+      'text',
+      'button',
+      'image',
+      'video',
+      'dynamic',
+      'logo',
+      'social',
+      'html',
+      'divider',
+      'product',
+      'navigation',
+      'spacer',
+    ]),
     content: z.string().max(250000).default(''),
     href: z.string().trim().max(2048).optional(),
     align: z.enum(['left', 'center', 'right']).optional(),
+    alt: z.string().trim().max(500).optional(),
+    imageUrl: z.string().trim().max(2048).optional(),
+    subtitle: z.string().max(5000).optional(),
+    price: z.string().trim().max(100).optional(),
+    buttonText: z.string().trim().max(120).optional(),
+    items: z
+      .array(
+        z
+          .object({
+            label: z.string().trim().min(1).max(80),
+            url: z.string().trim().max(2048),
+          })
+          .strict(),
+      )
+      .max(12)
+      .optional(),
   })
   .strict();
 
 const templateFields = {
   name: z.string().trim().min(2).max(120),
-  subject: z.string().trim().min(1).max(255),
+  subject: z.string().trim().max(255),
   preheader: z.string().trim().max(500),
   type: z.enum(['visual', 'simple', 'html']),
   status: z.enum(['draft', 'active', 'archived']),
@@ -28,7 +58,7 @@ const templateFields = {
 const templateBody = z
   .object({
     name: templateFields.name,
-    subject: templateFields.subject,
+    subject: templateFields.subject.default(''),
     preheader: templateFields.preheader.default(''),
     type: templateFields.type.default('visual'),
     status: templateFields.status.default('draft'),

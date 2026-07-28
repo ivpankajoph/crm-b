@@ -1,6 +1,8 @@
 import express from 'express';
 import { 
   getNotifications, 
+  getNotificationsPaged,
+  getNotificationSummary,
   createNotification, 
   markAsRead, 
   markAllAsRead, 
@@ -10,6 +12,9 @@ import {
 import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
+
+router.get('/paged', protect, getNotificationsPaged);
+router.get('/summary', protect, getNotificationSummary);
 
 router.route('/')
   .get(protect, getNotifications)

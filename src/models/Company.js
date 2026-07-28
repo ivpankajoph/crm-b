@@ -73,6 +73,9 @@ const companySchema = new mongoose.Schema({
     enum: ['New', 'Demo Scheduled', 'Interested', 'Not Interested', 'Prospective', 'Committed', 'Converted', 'Follow Up'],
     default: 'New'
   },
+  leadStatusChangedAt: {
+    type: Date,
+  },
   comments: [{
     text: { type: String, required: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -87,7 +90,12 @@ const companySchema = new mongoose.Schema({
 });
 
 companySchema.index({ createdBy: 1, assignedTo: 1, leadStatus: 1, createdAt: -1 });
+companySchema.index({ assignedTo: 1, createdAt: -1, leadStatus: 1 });
+companySchema.index({ createdAt: -1, leadStatus: 1 });
 companySchema.index({ scheduledDateTime: 1, followTypeDate: 1 });
+companySchema.index({ createdBy: 1, createdAt: -1 }, { name: 'company_createdBy_createdAt' });
+companySchema.index({ assignedTo: 1, createdAt: -1 }, { name: 'company_assignedTo_createdAt' });
+companySchema.index({ leadStatus: 1, createdAt: 1 }, { name: 'company_leadStatus_createdAt' });
 
 const Company = mongoose.model('Company', companySchema);
 

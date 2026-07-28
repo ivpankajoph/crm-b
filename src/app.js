@@ -6,8 +6,10 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import cookieParser from 'cookie-parser';
 import morgan from 'morgan';
+import compression from 'compression';
 import dotenv from 'dotenv';
 import { notFound, errorHandler } from './middleware/errorMiddleware.js';
+import { performanceTiming } from './middleware/performanceTiming.js';
 import { protect } from './middleware/authMiddleware.js';
 import authRoutes from './routes/authRoutes.js';
 import roleRoutes from './routes/roleRoutes.js';
@@ -42,6 +44,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+const envEnabled = (name, fallback = true) => {
+  const value = process.env[name];
+  if (value === undefined) return fallback;
+  return !['0', 'false', 'off', 'no'].includes(String(value).toLowerCase());
+};
 
 const bridgeCrmUserToWhatsApp = (req, res, next) => {
   if (req.path.startsWith('/webhook/whatsapp')) return next();
@@ -107,6 +114,16 @@ const corsOptions = {
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // Security and utility middlewares
+if (envEnabled('PERFORMANCE_TIMING_ENABLED')) app.use(performanceTiming);
+if (envEnabled('RESPONSE_COMPRESSION_ENABLED')) {
+  app.use(compression({
+    threshold: Math.max(Number(process.env.RESPONSE_COMPRESSION_THRESHOLD_BYTES || 1024), 512),
+    filter: (req, res) => {
+      if (req.headers['x-no-compression']) return false;
+      return compression.filter(req, res);
+    },
+  }));
+}
 app.use(helmet());
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));

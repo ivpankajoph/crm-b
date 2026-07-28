@@ -11,9 +11,24 @@ export const emailBlockTypes = [
   'text',
   'button',
   'image',
+  'video',
+  'dynamic',
+  'logo',
+  'social',
+  'html',
   'divider',
+  'product',
+  'navigation',
   'spacer',
 ];
+
+const emailBlockItemSchema = new mongoose.Schema(
+  {
+    label: { type: String, trim: true, required: true, maxlength: 80 },
+    url: { type: String, trim: true, default: '', maxlength: 2048 },
+  },
+  { _id: false },
+);
 
 const emailBlockSchema = new mongoose.Schema(
   {
@@ -42,6 +57,43 @@ const emailBlockSchema = new mongoose.Schema(
       enum: ['left', 'center', 'right'],
       default: 'left',
     },
+    alt: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: 500,
+    },
+    imageUrl: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: 2048,
+    },
+    subtitle: {
+      type: String,
+      default: '',
+      maxlength: 5000,
+    },
+    price: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: 100,
+    },
+    buttonText: {
+      type: String,
+      trim: true,
+      default: '',
+      maxlength: 120,
+    },
+    items: {
+      type: [emailBlockItemSchema],
+      default: undefined,
+      validate: {
+        validator: (items) => !items || items.length <= 12,
+        message: 'A block can contain at most 12 items',
+      },
+    },
   },
   { _id: false },
 );
@@ -56,8 +108,8 @@ const emailMarketingTemplateSchema = new mongoose.Schema(
     },
     subject: {
       type: String,
-      required: true,
       trim: true,
+      default: '',
       maxlength: 255,
     },
     preheader: {

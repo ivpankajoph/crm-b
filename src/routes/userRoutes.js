@@ -1,8 +1,11 @@
 import express from 'express';
-import { getUsers, createUser, deleteUser, updateUser } from '../controllers/userController.js';
+import { getUsers, getUsersPaged, getUserOptions, createUser, deleteUser, updateUser } from '../controllers/userController.js';
 import { protect } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
+
+router.get('/paged', protect, getUsersPaged);
+router.get('/options', protect, getUserOptions);
 
 router.route('/')
   .get(protect, getUsers)
