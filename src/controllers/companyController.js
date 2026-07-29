@@ -50,7 +50,7 @@ export const getCompaniesPaged = async (req, res, next) => {
 
     const [items, total, cities] = await Promise.all([
       Company.find(filter)
-        .select('companyName customerName customerDesignation email1 mobileNo website1 city country leadStatus createdBy assignedTo createdAt')
+        .select('companyName customerName customerDesignation email1 mobileNo website1 city country leadStatus followUpRequired followUpDateTime followUpType followUpPriority followUpReminder followTypeDate scheduledDateTime createdBy assignedTo createdAt')
         .populate('createdBy', 'name role')
         .populate('assignedTo', 'name')
         .sort(safeSort(req.query, ['createdAt', 'companyName', 'city']))

@@ -62,6 +62,29 @@ const companySchema = new mongoose.Schema({
   followType: {
     type: String,
   },
+  followUpRequired: {
+    type: Boolean,
+    default: false,
+  },
+  followUpDateTime: {
+    type: Date,
+    default: null,
+  },
+  followUpType: {
+    type: String,
+    enum: ['Call', 'WhatsApp', 'Email', 'Meeting', 'Demo', 'Other'],
+    default: null,
+  },
+  followUpPriority: {
+    type: String,
+    enum: ['Low', 'Normal', 'High', 'Urgent'],
+    default: null,
+  },
+  followUpReminder: {
+    type: String,
+    enum: ['15_minutes', '30_minutes', '1_hour', '1_day'],
+    default: null,
+  },
   messageNotes: {
     type: String,
   },
@@ -75,6 +98,28 @@ const companySchema = new mongoose.Schema({
   },
   leadStatusChangedAt: {
     type: Date,
+  },
+  statusDetails: {
+    status: String,
+    note: { type: String, maxlength: 4000 },
+    productService: { type: String, maxlength: 500 },
+    expectedDecisionDate: Date,
+    demoDateTime: Date,
+    demoMode: { type: String, enum: ['Online', 'On-site', null], default: null },
+    meetingLink: { type: String, maxlength: 1000 },
+    location: { type: String, maxlength: 500 },
+    reminder: String,
+    reason: { type: String, maxlength: 500 },
+    requirement: { type: String, maxlength: 2000 },
+    estimatedDealValue: Number,
+    expectedClosingDate: Date,
+    committedProductService: { type: String, maxlength: 500 },
+    dealValue: Number,
+    expectedCompletionDate: Date,
+    convertedAt: Date,
+    finalDealValue: Number,
+    savedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    savedAt: Date,
   },
   comments: [{
     text: { type: String, required: true },
@@ -93,6 +138,7 @@ companySchema.index({ createdBy: 1, assignedTo: 1, leadStatus: 1, createdAt: -1 
 companySchema.index({ assignedTo: 1, createdAt: -1, leadStatus: 1 });
 companySchema.index({ createdAt: -1, leadStatus: 1 });
 companySchema.index({ scheduledDateTime: 1, followTypeDate: 1 });
+companySchema.index({ followUpRequired: 1, followUpDateTime: 1 });
 companySchema.index({ createdBy: 1, createdAt: -1 }, { name: 'company_createdBy_createdAt' });
 companySchema.index({ assignedTo: 1, createdAt: -1 }, { name: 'company_assignedTo_createdAt' });
 companySchema.index({ leadStatus: 1, createdAt: 1 }, { name: 'company_leadStatus_createdAt' });

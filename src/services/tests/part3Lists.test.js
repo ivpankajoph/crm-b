@@ -10,6 +10,7 @@ import taskRoutes from '../../routes/taskRoutes.js';
 import noteRoutes from '../../routes/noteRoutes.js';
 import notificationRoutes from '../../routes/notificationRoutes.js';
 import leadRoutes from '../../routes/leadRoutes.js';
+import followUpRoutes from '../../routes/followUpRoutes.js';
 
 const routePaths = (router) => router.stack
   .filter((layer) => layer.route)
@@ -73,6 +74,11 @@ test('all additive Part 3 routes remain available beside legacy routes', () => {
   assert.ok(routePaths(notificationRoutes).includes('/paged'));
   assert.ok(routePaths(notificationRoutes).includes('/summary'));
   assert.ok(routePaths(leadRoutes).includes('/all/paged'));
+  assert.ok(routePaths(leadRoutes).includes('/unified/:type/:id/follow-up'));
+  assert.ok(routePaths(followUpRoutes).includes('/pending'));
+  assert.ok(routePaths(followUpRoutes).includes('/lead/:leadId'));
+  assert.ok(routePaths(followUpRoutes).includes('/:id/complete'));
+  assert.ok(routePaths(followUpRoutes).includes('/:id/snooze'));
 
   for (const router of [
     companyRoutes,

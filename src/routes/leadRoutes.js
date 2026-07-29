@@ -7,6 +7,7 @@ import {
   getAllCombinedLeadsPaged,
   getUnifiedLead,
   updateLeadStatus,
+  updateLeadFollowUp,
   addLeadComment,
   assignLead,
   bulkAssignLeads,
@@ -53,6 +54,9 @@ router.route('/unified/:type/:id/calls')
 
 router.route('/unified/:type/:id/status')
   .put(protect, updateLeadStatus);
+
+router.route('/unified/:type/:id/follow-up')
+  .put(protect, updateLeadFollowUp);
 
 router.route('/unified/:type/:id/comment')
   .post(protect, upload.single('attachment'), addLeadComment);

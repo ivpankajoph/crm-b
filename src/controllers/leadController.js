@@ -6,6 +6,7 @@ import User from '../models/User.js';
 import Employee from '../models/Employee.js';
 import CallLog from '../models/CallLog.js';
 import LeadStatusHistory from '../models/LeadStatusHistory.js';
+import FollowUp from '../models/FollowUp.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { getDownlineUserIds, isAdminUser, normalizeRole } from '../utils/hierarchy.js';
 import { logActivity } from '../utils/activity.js';
@@ -16,6 +17,9 @@ import { getCachedLeadStats } from '../services/leadStatsService.js';
 import { invalidateLeadMetricsCaches } from '../services/cacheService.js';
 import { escapeRegex, pagedData, paginationMeta, parsePagination } from '../services/listQueryService.js';
 import { parseLeadStatusDate } from '../utils/leadStatusDate.js';
+import { parseFollowUpPayload } from '../utils/followUp.js';
+import { parseStatusDetails } from '../utils/statusDetails.js';
+import { cancelFollowUpReminder } from '../services/followUpReminderService.js';
 
 const STATUS_ALIASES = {
   demo_scheduled: 'Demo Scheduled',
@@ -201,6 +205,7 @@ export const getLeadStats = async (req, res, next) => {
       endDate: req.query.endDate,
       month: req.query.month,
       year: req.query.year,
+      type: req.query.type === 'Company' ? 'Company' : undefined,
     };
     const { value, cacheStatus } = await getCachedLeadStats(req.user, filters);
     const duration = Date.now() - startedAt;
@@ -484,7 +489,7 @@ export const getUnifiedLead = async (req, res, next) => {
 export const updateLeadStatus = async (req, res, next) => {
   try {
     const { type, id } = req.params;
-    const { status, scheduledDateTime, statusDate } = req.body;
+    const { status, scheduledDateTime, statusDate, details } = req.body;
     const newStatus = normalizeStatus(status);
     const Model = getLeadModel(type);
     if (!Model || !newStatus) return errorResponse(res, 400, 'Invalid lead type or status');
@@ -505,8 +510,44 @@ export const updateLeadStatus = async (req, res, next) => {
     if (oldStatus !== newStatus) update.leadStatusChangedAt = statusChangedAt;
     if (scheduledDateTime) update.scheduledDateTime = scheduledDateTime;
     if (newStatus === 'Demo Scheduled' && scheduledDateTime) update.followTypeDate = scheduledDateTime;
+    if (Model === Company && details !== undefined) {
+      try {
+        const parsedDetails = parseStatusDetails(newStatus, details);
+        update.statusDetails = {
+          ...parsedDetails,
+          savedBy: req.user._id,
+          savedAt: new Date(),
+        };
+        if (newStatus === 'Demo Scheduled') {
+          update.scheduledDateTime = parsedDetails.demoDateTime;
+          update.followTypeDate = parsedDetails.demoDateTime;
+        }
+      } catch (error) {
+        return errorResponse(res, 400, error.message);
+      }
+    }
+    if (Model === Company && newStatus !== 'Follow Up') {
+      update.followUpRequired = false;
+      update.followUpDateTime = null;
+      update.followUpType = null;
+      update.followUpPriority = null;
+      update.followUpReminder = null;
+    }
 
     const lead = await Model.findByIdAndUpdate(id, update, { new: true });
+
+    if (Model === Company && newStatus !== 'Follow Up') {
+      const activeFollowUps = await FollowUp.find({
+        lead: lead._id,
+        status: { $in: ['Pending', 'Snoozed'] },
+      });
+      for (const followUp of activeFollowUps) {
+        followUp.status = 'Cancelled';
+        followUp.activeKey = undefined;
+        await followUp.save();
+        await cancelFollowUpReminder(followUp._id);
+      }
+    }
 
     if (oldStatus !== newStatus) {
       await LeadStatusHistory.create({
@@ -530,6 +571,57 @@ export const updateLeadStatus = async (req, res, next) => {
 
     await invalidateLeadMetricsCaches();
     return successResponse(res, 200, 'Status updated', lead);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Save or clear a company lead follow-up
+// @route   PUT /api/leads/unified/:type/:id/follow-up
+// @access  Private
+export const updateLeadFollowUp = async (req, res, next) => {
+  try {
+    const { type, id } = req.params;
+    if (type !== 'Company') {
+      return errorResponse(res, 400, 'Follow-ups are only available for company leads');
+    }
+
+    let update;
+    try {
+      update = parseFollowUpPayload(req.body);
+    } catch (error) {
+      return errorResponse(res, 400, error.message);
+    }
+
+    const existingLead = await findUnifiedLeadForUser(type, id, req.user);
+    if (!existingLead) {
+      return errorResponse(res, 404, 'Lead not found');
+    }
+
+    const lead = await Company.findByIdAndUpdate(
+      id,
+      { $set: update },
+      { new: true, runValidators: true },
+    )
+      .populate('createdBy', 'name role email')
+      .populate('assignedTo', 'name role email')
+      .populate('comments.createdBy', 'name');
+
+    await logActivity({
+      user: req.user._id,
+      actionType: update.followUpRequired ? 'lead_follow_up_saved' : 'lead_follow_up_cleared',
+      description: `${update.followUpRequired ? 'Saved' : 'Cleared'} follow-up for ${getLeadName(lead)}`,
+      entityType: 'Company',
+      entityId: lead._id,
+      metadata: update,
+    });
+
+    return successResponse(
+      res,
+      200,
+      update.followUpRequired ? 'Follow-up saved successfully' : 'Follow-up cleared successfully',
+      lead,
+    );
   } catch (error) {
     next(error);
   }
@@ -591,6 +683,12 @@ export const assignLead = async (req, res, next) => {
     const lead = await Model.findByIdAndUpdate(id, { $addToSet: { assignedTo } }, { new: true }).populate('assignedTo', 'name');
 
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+    if (Model === Company) {
+      await FollowUp.updateMany(
+        { lead: lead._id, status: { $in: ['Pending', 'Snoozed'] } },
+        { $set: { assignedTo: lead.assignedTo.map((user) => user._id || user) } },
+      );
+    }
 
     await Notification.create({
       title: 'New Lead Assigned',
@@ -637,6 +735,12 @@ export const bulkAssignLeads = async (req, res, next) => {
 
       if (updatedLead) {
         updatedLeads.push(updatedLead);
+        if (Model === Company) {
+          await FollowUp.updateMany(
+            { lead: updatedLead._id, status: { $in: ['Pending', 'Snoozed'] } },
+            { $set: { assignedTo: updatedLead.assignedTo.map((user) => user._id || user) } },
+          );
+        }
         await Notification.create({
           title: 'New Lead Assigned',
           message: `You have been assigned a new ${item.type} lead: ${getLeadName(updatedLead)}.`,
