@@ -29,6 +29,7 @@ import settingsRoutes from './routes/settingsRoutes.js';
 import attendanceRoutes from './routes/attendanceRoutes.js';
 import telephonyRoutes from './routes/telephonyRoutes.js';
 import whatsappRoutes from './routes/whatsappRoutes.js';
+import followUpRoutes from './routes/followUpRoutes.js';
 import emailMarketingRouter from './modules/email-marketing/index.js';
 
 dotenv.config();
@@ -163,6 +164,7 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/telephony', telephonyRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
+app.use('/api/follow-ups', followUpRoutes);
 app.use('/api/email-marketing', emailMarketingRouter);
 app.use('/api/whatsapp-marketing', bridgeCrmUserToWhatsApp, whatsappMarketingRouter);
 

@@ -94,6 +94,36 @@ test('lead aggregation uses grouped counts and lookup visibility without loading
   }
 });
 
+test('company-only lead stats do not query customer records', { concurrency: false }, async () => {
+  const originals = {
+    customerAggregate: Customer.aggregate,
+    companyAggregate: Company.aggregate,
+    companyCount: Company.countDocuments,
+    historyAggregate: LeadStatusHistory.aggregate,
+  };
+  try {
+    Customer.aggregate = () => { throw new Error('Customer.aggregate must not run for company-only stats'); };
+    Company.aggregate = async () => [
+      { _id: 'Interested', count: 4 },
+      { _id: 'Follow Up', count: 2 },
+    ];
+    Company.countDocuments = async () => 1;
+    LeadStatusHistory.aggregate = async () => [{ _id: 'Follow Up', count: 1 }];
+
+    const stats = await calculateLeadStatsAggregated(admin, { period: 'all', type: 'Company' });
+    assert.equal(stats.totalLeads, 6);
+    assert.equal(stats.interested, 4);
+    assert.equal(stats.followUp, 2);
+    assert.equal(stats.today.demoScheduled, 1);
+    assert.equal(stats.today.followUp, 1);
+  } finally {
+    Customer.aggregate = originals.customerAggregate;
+    Company.aggregate = originals.companyAggregate;
+    Company.countDocuments = originals.companyCount;
+    LeadStatusHistory.aggregate = originals.historyAggregate;
+  }
+});
+
 test('lead filter validation rejects incomplete committed values', () => {
   assert.throws(
     () => buildLeadStatsMatch(admin, { period: 'month', month: '2026-' }),

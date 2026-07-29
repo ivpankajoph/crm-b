@@ -111,6 +111,38 @@ const historyVisibilityLookup = (from, as, matchStage) => ({
 export const calculateLeadStatsAggregated = async (user, filters) => {
   const matchStage = buildLeadStatsMatch(user, filters);
   const { start, end } = todayRange();
+  if (filters.type === 'Company') {
+    const [companyGroups, todayDemo, todayHistory] = await Promise.all([
+      Company.aggregate(groupedStatusPipeline(matchStage)),
+      Company.countDocuments({ ...matchStage, scheduledDateTime: { $gte: start, $lte: end } }),
+      LeadStatusHistory.aggregate([
+        {
+          $match: {
+            leadModel: 'Company',
+            newStatus: { $in: TRACKED_STATUSES },
+            changedAt: { $gte: start, $lte: end },
+          },
+        },
+        historyVisibilityLookup(Company.collection.name, 'visibleCompany', matchStage),
+        { $match: { $expr: { $gt: [{ $size: '$visibleCompany' }, 0] } } },
+        { $group: { _id: '$newStatus', count: { $sum: 1 } } },
+      ]),
+    ]);
+    const result = emptyLeadStats();
+    applyGroupedCounts(result, companyGroups);
+    result.today.demoScheduled = todayDemo;
+    const todayKey = {
+      'Follow Up': 'followUp',
+      Prospective: 'prospective',
+      Committed: 'committed',
+      Converted: 'converted',
+      'Not Interested': 'notInterested',
+    };
+    todayHistory.forEach(({ _id, count }) => {
+      if (todayKey[_id]) result.today[todayKey[_id]] = count;
+    });
+    return result;
+  }
   const [customerGroups, companyGroups, todayDemo, todayHistory] = await Promise.all([
     Customer.aggregate(groupedStatusPipeline(matchStage)),
     Company.aggregate(groupedStatusPipeline(matchStage)),
@@ -162,6 +194,24 @@ export const calculateLeadStatsAggregated = async (user, filters) => {
 export const calculateLeadStatsLegacy = async (user, filters) => {
   const matchStage = buildLeadStatsMatch(user, filters);
   const result = emptyLeadStats();
+  if (filters.type === 'Company') {
+    const statuses = ['Demo Scheduled', 'Interested', 'Not Interested', 'Prospective', 'Committed', 'Converted', 'Follow Up'];
+    const [total, ...statusCounts] = await Promise.all([
+      Company.countDocuments(matchStage),
+      ...statuses.map((status) => Company.countDocuments({ ...matchStage, leadStatus: status })),
+    ]);
+    result.totalLeads = total;
+    [
+      'demoScheduled',
+      'interested',
+      'notInterested',
+      'prospective',
+      'committed',
+      'converted',
+      'followUp',
+    ].forEach((key, index) => { result[key] = statusCounts[index]; });
+    return result;
+  }
   const countByStatus = async (status) => {
     const [customers, companies] = await Promise.all([
       Customer.countDocuments({ ...matchStage, leadStatus: status }),
@@ -226,5 +276,10 @@ export const getCachedLeadStats = async (user, filters) => {
       ? calculateLeadStatsAggregated(user, filters)
       : calculateLeadStatsLegacy(user, filters)
   ));
-  return { ...result, queryCount: useAggregation ? 5 : 23 };
+  return {
+    ...result,
+    queryCount: filters.type === 'Company'
+      ? (useAggregation ? 3 : 8)
+      : (useAggregation ? 5 : 23),
+  };
 };

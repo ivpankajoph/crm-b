@@ -5,6 +5,8 @@ import http from 'http';
 import { Server } from 'socket.io';
 import { startEmailMarketingRuntime } from './modules/email-marketing/services/emailQueueService.js';
 import { startEmailMarketingAutomationRuntime } from './modules/email-marketing/services/automationQueueService.js';
+import { configureRealtime } from './services/realtimeService.js';
+import { startFollowUpReminderRuntime } from './services/followUpReminderService.js';
 
 const PORT = process.env.PORT || 8080;
 
@@ -36,28 +38,37 @@ const startServer = async () => {
     });
 
     const userSockets = new Map();
+    configureRealtime(io, userSockets);
 
     io.on('connection', (socket) => {
       socket.on('register', (userId) => {
-        userSockets.set(userId, socket.id);
+        if (!userId) return;
+        const key = String(userId);
+        const sockets = userSockets.get(key) || new Set();
+        sockets.add(socket.id);
+        userSockets.set(key, sockets);
       });
 
       socket.on('send_message', (data) => {
         const { recipientId, message } = data;
-        const recipientSocket = userSockets.get(recipientId);
-        if (recipientSocket) {
-          io.to(recipientSocket).emit('receive_message', message);
+        const recipientSockets = userSockets.get(String(recipientId));
+        if (recipientSockets) {
+          for (const socketId of recipientSockets) {
+            io.to(socketId).emit('receive_message', message);
+          }
         }
       });
 
       socket.on('disconnect', () => {
-        for (const [key, value] of userSockets.entries()) {
-          if (value === socket.id) {
-            userSockets.delete(key);
-            break;
-          }
+        for (const [key, sockets] of userSockets.entries()) {
+          sockets.delete(socket.id);
+          if (sockets.size === 0) userSockets.delete(key);
         }
       });
+    });
+
+    await startFollowUpReminderRuntime().catch((error) => {
+      console.error('[FollowUpScheduler] Runtime could not start:', error.message);
     });
 
     server.listen(PORT, () => {

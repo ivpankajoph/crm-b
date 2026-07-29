@@ -6,6 +6,7 @@ const definitions = [
   ['companies', { assignedTo: 1, createdAt: -1, leadStatus: 1 }],
   ['companies', { createdAt: -1, leadStatus: 1 }],
   ['companies', { scheduledDateTime: 1, followTypeDate: 1 }],
+  ['companies', { followUpRequired: 1, followUpDateTime: 1 }],
   ['customers', { createdBy: 1, assignedTo: 1, leadStatus: 1, createdAt: -1 }],
   ['customers', { assignedTo: 1, createdAt: -1, leadStatus: 1 }],
   ['customers', { createdAt: -1, leadStatus: 1 }],
@@ -25,6 +26,10 @@ const definitions = [
   ['notes', { createdBy: 1, isSticky: 1, createdAt: -1 }],
   ['notifications', { user: 1, createdAt: -1 }],
   ['notifications', { user: 1, isRead: 1, createdAt: -1 }],
+  ['followups', { activeKey: 1 }, { unique: true, sparse: true }],
+  ['followups', { status: 1, nextReminderAt: 1 }],
+  ['followups', { assignedTo: 1, status: 1, nextReminderAt: 1 }],
+  ['followups', { lead: 1, createdAt: -1 }],
 ];
 
 const sameKey = (left, right) => JSON.stringify(Object.entries(left)) === JSON.stringify(Object.entries(right));
@@ -32,14 +37,20 @@ const sameKey = (left, right) => JSON.stringify(Object.entries(left)) === JSON.s
 try {
   if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is required');
   await mongoose.connect(process.env.MONGODB_URI, { autoIndex: false });
-  for (const [collectionName, key] of definitions) {
+  for (const [collectionName, key, options = {}] of definitions) {
     const collection = mongoose.connection.db.collection(collectionName);
-    const existing = (await collection.indexes()).find((index) => sameKey(index.key, key));
+    let indexes = [];
+    try {
+      indexes = await collection.indexes();
+    } catch (error) {
+      if (error.codeName !== 'NamespaceNotFound' && error.code !== 26) throw error;
+    }
+    const existing = indexes.find((index) => sameKey(index.key, key));
     if (existing) {
       console.log(`Index already present: ${collectionName}.${existing.name}`);
     } else {
       const name = `part3_${collectionName}_${Object.keys(key).join('_')}`;
-      await collection.createIndex(key, { name });
+      await collection.createIndex(key, { name, ...options });
       console.log(`Index created: ${collectionName}.${name}`);
     }
   }
