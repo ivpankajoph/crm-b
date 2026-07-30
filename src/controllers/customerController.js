@@ -5,6 +5,9 @@ import { isAdminUser } from '../utils/hierarchy.js';
 import { logActivity } from '../utils/activity.js';
 import { invalidateLeadMetricsCaches } from '../services/cacheService.js';
 import { escapeRegex } from '../services/listQueryService.js';
+import { resolveLeadVisibility } from '../services/leadAccessService.js';
+import { userHasPermission } from '../services/accessControlService.js';
+import { PERMISSIONS } from '../constants/permissions.js';
 
 const normalizeAssignees = (assignedTo) => {
   if (!assignedTo) return [];
@@ -19,7 +22,7 @@ const isAssignedToUser = (lead, userId) => normalizeAssignees(lead.assignedTo)
 // @access  Private
 export const getCustomers = async (req, res, next) => {
   try {
-    const query = isAdminUser(req.user) ? {} : { assignedTo: req.user._id };
+    const { query } = await resolveLeadVisibility(req.user);
 
     const customers = await Customer.find(query)
       .populate('createdBy', 'name role email')
@@ -34,7 +37,8 @@ export const getCustomers = async (req, res, next) => {
 export const getCustomerOptions = async (req, res, next) => {
   try {
     const search = String(req.query.search || '').trim();
-    const filter = isAdminUser(req.user) ? {} : { assignedTo: req.user._id };
+    const { query: visibility } = await resolveLeadVisibility(req.user);
+    const filter = { ...visibility };
     if (search) {
       const pattern = new RegExp(escapeRegex(search), 'i');
       filter.$or = [{ name: pattern }, { email: pattern }, { phone: pattern }];
@@ -54,17 +58,12 @@ export const getCustomerOptions = async (req, res, next) => {
 // @access  Private
 export const getCustomerById = async (req, res, next) => {
   try {
-    const customer = await Customer.findById(req.params.id)
+    const { query: visibility } = await resolveLeadVisibility(req.user);
+    const customer = await Customer.findOne({ _id: req.params.id, ...visibility })
       .populate('createdBy', 'name role email');
 
     if (!customer) {
       return res.status(404).json({ success: false, message: 'Customer not found' });
-    }
-
-    const canView = isAdminUser(req.user)
-      || isAssignedToUser(customer, req.user._id);
-    if (!canView) {
-      return res.status(403).json({ success: false, message: 'Not authorized to access this customer' });
     }
 
     return successResponse(res, 200, 'Customer fetched successfully', customer);
@@ -80,6 +79,16 @@ export const createCustomer = async (req, res, next) => {
   try {
     const { name, email, phone, company, address, status, totalSpend, designation, website, messageNotes, scheduledDateTime, assignedTo, leadStatus } = req.body;
     const finalLeadStatus = scheduledDateTime ? 'Demo Scheduled' : leadStatus || 'New';
+    if (
+      (scheduledDateTime || finalLeadStatus !== 'New')
+      && !userHasPermission(req.access, PERMISSIONS.LEADS_CHANGE_STATUS)
+    ) {
+      return errorResponse(res, 403, 'You do not have permission to set the lead status');
+    }
+    if (assignedTo && String(assignedTo) !== String(req.user._id)
+      && !userHasPermission(req.access, PERMISSIONS.LEADS_ASSIGN)) {
+      return errorResponse(res, 403, 'You do not have permission to assign leads');
+    }
 
     const customer = await Customer.create({
       name,
@@ -95,7 +104,7 @@ export const createCustomer = async (req, res, next) => {
       leadStatus: finalLeadStatus,
       status: status || 'Active',
       totalSpend: totalSpend || 0,
-      createdBy: req.user._id
+      createdBy: req.user._id,
     });
 
     await LeadStatusHistory.create({
@@ -128,21 +137,26 @@ export const createCustomer = async (req, res, next) => {
 // @access  Private
 export const updateCustomer = async (req, res, next) => {
   try {
-    let customer = await Customer.findById(req.params.id);
+    const { query: visibility } = await resolveLeadVisibility(req.user);
+    let customer = await Customer.findOne({ _id: req.params.id, ...visibility });
 
     if (!customer) {
       return res.status(404).json({ success: false, message: 'Customer not found' });
     }
 
-    const canEdit = isAdminUser(req.user)
-      || isAssignedToUser(customer, req.user._id);
-    if (!canEdit) {
-       return res.status(403).json({ success: false, message: 'Not authorized to update this customer' });
-    }
-
     const { name, email, phone, company, address, status, totalSpend, designation, website, messageNotes, scheduledDateTime, assignedTo, leadStatus } = req.body;
     const oldStatus = customer.leadStatus;
     const finalLeadStatus = scheduledDateTime ? 'Demo Scheduled' : leadStatus;
+    if (
+      finalLeadStatus && oldStatus !== finalLeadStatus
+      && !userHasPermission(req.access, PERMISSIONS.LEADS_CHANGE_STATUS)
+    ) {
+      return errorResponse(res, 403, 'You do not have permission to change lead status');
+    }
+    if (assignedTo && !normalizeAssignees(customer.assignedTo).some((id) => String(id) === String(assignedTo))
+      && !userHasPermission(req.access, PERMISSIONS.LEADS_ASSIGN)) {
+      return errorResponse(res, 403, 'You do not have permission to assign leads');
+    }
 
     customer.name = name || customer.name;
     customer.email = email !== undefined ? email : customer.email;
@@ -187,14 +201,11 @@ export const updateCustomer = async (req, res, next) => {
 // @access  Private
 export const deleteCustomer = async (req, res, next) => {
   try {
-    const customer = await Customer.findById(req.params.id);
+    const { query: visibility } = await resolveLeadVisibility(req.user);
+    const customer = await Customer.findOne({ _id: req.params.id, ...visibility });
 
     if (!customer) {
       return res.status(404).json({ success: false, message: 'Customer not found' });
-    }
-
-    if (!isAdminUser(req.user) && customer.createdBy.toString() !== req.user._id.toString()) {
-       return res.status(403).json({ success: false, message: 'Not authorized to delete this customer' });
     }
 
     await customer.deleteOne();
@@ -226,7 +237,8 @@ export const bulkCreateCustomers = async (req, res, next) => {
       address: item.address || item.Address || '',
       status: item.status || item.Status || 'Active',
       totalSpend: item.totalSpend || item.TotalSpend ? Number(item.totalSpend || item.TotalSpend) : 0,
-      createdBy: req.user._id
+      createdBy: req.user._id,
+      assignedTo: [req.user._id],
     })).filter(c => c.name); // Ensure name exists
 
     if (customersToInsert.length === 0) {

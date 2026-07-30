@@ -5,6 +5,9 @@ import { isAdminUser } from '../utils/hierarchy.js';
 import { logActivity } from '../utils/activity.js';
 import { invalidateLeadMetricsCaches } from '../services/cacheService.js';
 import { escapeRegex, pagedData, paginationMeta, parsePagination, safeSort } from '../services/listQueryService.js';
+import { resolveLeadVisibility } from '../services/leadAccessService.js';
+import { userHasPermission } from '../services/accessControlService.js';
+import { PERMISSIONS } from '../constants/permissions.js';
 
 const normalizeAssignees = (assignedTo) => {
   if (!assignedTo) return [];
@@ -19,7 +22,7 @@ const isAssignedToUser = (lead, userId) => normalizeAssignees(lead.assignedTo)
 // @access  Private
 export const getCompanies = async (req, res, next) => {
   try {
-    const query = isAdminUser(req.user) ? {} : { assignedTo: req.user._id };
+    const { query } = await resolveLeadVisibility(req.user);
 
     const companies = await Company.find(query)
       .populate('createdBy', 'name role email')
@@ -34,7 +37,8 @@ export const getCompanies = async (req, res, next) => {
 export const getCompaniesPaged = async (req, res, next) => {
   try {
     const { page, limit, skip, search } = parsePagination(req.query);
-    const filter = isAdminUser(req.user) ? {} : { assignedTo: req.user._id };
+    const { query: visibility } = await resolveLeadVisibility(req.user);
+    const filter = { ...visibility };
     if (search) {
       const pattern = new RegExp(escapeRegex(search), 'i');
       filter.$or = [
@@ -58,7 +62,7 @@ export const getCompaniesPaged = async (req, res, next) => {
         .limit(limit)
         .lean(),
       Company.countDocuments(filter),
-      Company.distinct('city', isAdminUser(req.user) ? {} : { assignedTo: req.user._id }),
+      Company.distinct('city', visibility),
     ]);
     return successResponse(res, 200, 'Companies page fetched successfully', pagedData(
       items,
@@ -73,7 +77,8 @@ export const getCompaniesPaged = async (req, res, next) => {
 export const getCompanyOptions = async (req, res, next) => {
   try {
     const search = String(req.query.search || '').trim();
-    const filter = isAdminUser(req.user) ? {} : { assignedTo: req.user._id };
+    const { query: visibility } = await resolveLeadVisibility(req.user);
+    const filter = { ...visibility };
     if (search) filter.companyName = new RegExp(escapeRegex(search), 'i');
     const companies = await Company.find(filter)
       .select('companyName customerName email1 mobileNo')
@@ -98,6 +103,16 @@ export const createCompany = async (req, res, next) => {
     } = req.body;
 
     const finalLeadStatus = scheduledDateTime ? 'Demo Scheduled' : leadStatus || 'New';
+    if (
+      (scheduledDateTime || finalLeadStatus !== 'New')
+      && !userHasPermission(req.access, PERMISSIONS.LEADS_CHANGE_STATUS)
+    ) {
+      return errorResponse(res, 403, 'You do not have permission to set the lead status');
+    }
+    if (assignedTo && String(assignedTo) !== String(req.user._id)
+      && !userHasPermission(req.access, PERMISSIONS.LEADS_ASSIGN)) {
+      return errorResponse(res, 403, 'You do not have permission to assign leads');
+    }
 
     const company = await Company.create({
       companyName,
@@ -155,16 +170,12 @@ export const createCompany = async (req, res, next) => {
 // @access  Private
 export const getCompanyById = async (req, res, next) => {
   try {
-    const company = await Company.findById(req.params.id).populate('createdBy', 'name role email');
+    const { query: visibility } = await resolveLeadVisibility(req.user);
+    const company = await Company.findOne({ _id: req.params.id, ...visibility })
+      .populate('createdBy', 'name role email');
     
     if (!company) {
       return res.status(404).json({ success: false, message: 'Company not found' });
-    }
-
-    const canView = isAdminUser(req.user)
-      || isAssignedToUser(company, req.user._id);
-    if (!canView) {
-       return res.status(403).json({ success: false, message: 'Not authorized to view this company' });
     }
 
     return successResponse(res, 200, 'Company fetched successfully', company);
@@ -178,16 +189,11 @@ export const getCompanyById = async (req, res, next) => {
 // @access  Private
 export const updateCompany = async (req, res, next) => {
   try {
-    let company = await Company.findById(req.params.id);
+    const { query: visibility } = await resolveLeadVisibility(req.user);
+    let company = await Company.findOne({ _id: req.params.id, ...visibility });
 
     if (!company) {
       return res.status(404).json({ success: false, message: 'Company not found' });
-    }
-
-    const canEdit = isAdminUser(req.user)
-      || isAssignedToUser(company, req.user._id);
-    if (!canEdit) {
-       return res.status(403).json({ success: false, message: 'Not authorized to edit this company' });
     }
 
     const { 
@@ -198,6 +204,16 @@ export const updateCompany = async (req, res, next) => {
     } = req.body;
     const oldStatus = company.leadStatus;
     const finalLeadStatus = scheduledDateTime ? 'Demo Scheduled' : leadStatus;
+    if (
+      finalLeadStatus && oldStatus !== finalLeadStatus
+      && !userHasPermission(req.access, PERMISSIONS.LEADS_CHANGE_STATUS)
+    ) {
+      return errorResponse(res, 403, 'You do not have permission to change lead status');
+    }
+    if (assignedTo && !normalizeAssignees(company.assignedTo).some((id) => String(id) === String(assignedTo))
+      && !userHasPermission(req.access, PERMISSIONS.LEADS_ASSIGN)) {
+      return errorResponse(res, 403, 'You do not have permission to assign leads');
+    }
 
     company = await Company.findByIdAndUpdate(req.params.id, {
       companyName, customerName, customerDesignation, email1, email2, 
@@ -234,14 +250,11 @@ export const updateCompany = async (req, res, next) => {
 // @access  Private
 export const deleteCompany = async (req, res, next) => {
   try {
-    const company = await Company.findById(req.params.id);
+    const { query: visibility } = await resolveLeadVisibility(req.user);
+    const company = await Company.findOne({ _id: req.params.id, ...visibility });
 
     if (!company) {
       return res.status(404).json({ success: false, message: 'Company not found' });
-    }
-
-    if (!isAdminUser(req.user) && company.createdBy.toString() !== req.user._id.toString()) {
-       return res.status(403).json({ success: false, message: 'Not authorized to delete this company' });
     }
 
     await company.deleteOne();
@@ -273,7 +286,8 @@ export const bulkCreateCompanies = async (req, res, next) => {
       type: item.type || item.Type || 'Prospect',
       revenue: item.revenue || item.Revenue ? Number(item.revenue || item.Revenue) : 0,
       address: item.address || item.Address || '',
-      createdBy: req.user._id
+      createdBy: req.user._id,
+      assignedTo: [req.user._id],
     })).filter(c => c.name); // Ensure name exists
 
     if (companiesToInsert.length === 0) {

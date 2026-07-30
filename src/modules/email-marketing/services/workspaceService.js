@@ -1,6 +1,5 @@
 import mongoose from 'mongoose';
 
-import Role from '../../../models/Role.js';
 import User from '../../../models/User.js';
 import { getEmailMarketingConfig } from '../config/emailMarketingConfig.js';
 import {
@@ -12,6 +11,11 @@ import {
 } from '../constants/permissions.js';
 import EmailMarketingMembership from '../models/EmailMarketingMembership.js';
 import EmailMarketingWorkspace from '../models/EmailMarketingWorkspace.js';
+import {
+  resolveEffectiveAccess,
+  userHasPermission,
+} from '../../../services/accessControlService.js';
+import { PERMISSIONS } from '../../../constants/permissions.js';
 
 const MAX_OWNER_DEPTH = 50;
 
@@ -77,15 +81,50 @@ const mapCrmRoleToMembershipRole = (role, isOwner) => {
 const resolveInitialPermissions = async (user, isOwner) => {
   if (isOwner) return [...EMAIL_MARKETING_PERMISSION_VALUES];
 
-  const role = await Role.findOne({ name: user.role }).select('permissions').lean();
-  const configured = sanitizeEmailMarketingPermissions(role?.permissions || []);
-  const permissions = configured.length
-    ? configured
+  const access = await resolveEffectiveAccess(user);
+  const usesCentralAccess = Number(access.accessVersion || 1) >= 2;
+  const configured = usesCentralAccess
+    ? []
+    : sanitizeEmailMarketingPermissions(access.permissions || []);
+  const mapped = [];
+  const has = (permission) => userHasPermission(access, permission);
+
+  if (has(PERMISSIONS.EMAIL_MODULE_VIEW)) {
+    mapped.push(EMAIL_MARKETING_PERMISSIONS.VIEW_DASHBOARD);
+  }
+  if (has(PERMISSIONS.EMAIL_TEMPLATES_USE)) {
+    mapped.push(EMAIL_MARKETING_PERMISSIONS.VIEW_SHARED_TEMPLATES);
+  }
+  if (has(PERMISSIONS.EMAIL_TEMPLATES_CREATE)) {
+    mapped.push(
+      EMAIL_MARKETING_PERMISSIONS.VIEW_SHARED_TEMPLATES,
+      EMAIL_MARKETING_PERMISSIONS.CREATE_CONTENT,
+    );
+  }
+  if (has(PERMISSIONS.EMAIL_TEMPLATES_EDIT)) {
+    mapped.push(
+      EMAIL_MARKETING_PERMISSIONS.VIEW_SHARED_TEMPLATES,
+      EMAIL_MARKETING_PERMISSIONS.EDIT_CONTENT,
+    );
+  }
+  if (has(PERMISSIONS.EMAIL_TEMPLATES_SHARE)) {
+    mapped.push(
+      EMAIL_MARKETING_PERMISSIONS.VIEW_SHARED_TEMPLATES,
+      EMAIL_MARKETING_PERMISSIONS.SHARE_CONTENT,
+    );
+  }
+  if (has(PERMISSIONS.EMAIL_CAMPAIGNS_MANAGE)) {
+    mapped.push(
+      EMAIL_MARKETING_PERMISSIONS.MANAGE_CAMPAIGNS,
+      EMAIL_MARKETING_PERMISSIONS.MANAGE_AUDIENCE,
+    );
+  }
+
+  const permissions = configured.length || mapped.length || usesCentralAccess
+    ? [...configured, ...mapped]
     : getDefaultEmailMarketingPermissions(user.role);
 
-  return Array.from(
-    new Set([EMAIL_MARKETING_PERMISSIONS.VIEW_DASHBOARD, ...permissions]),
-  );
+  return Array.from(new Set(permissions));
 };
 
 export const ensureEmailMarketingContext = async (authenticatedUser) => {
@@ -129,15 +168,6 @@ export const ensureEmailMarketingContext = async (authenticatedUser) => {
     isOwner,
   );
 
-  const insertDefaults = {
-    workspaceId: workspace._id,
-    userId: authenticatedUser._id,
-    role: membershipRole,
-    permissions: initialPermissions,
-    status: 'active',
-    invitedBy: isOwner ? null : owner._id,
-  };
-
   const membership = await EmailMarketingMembership.findOneAndUpdate(
     { workspaceId: workspace._id, userId: authenticatedUser._id },
     isOwner
@@ -155,8 +185,17 @@ export const ensureEmailMarketingContext = async (authenticatedUser) => {
           },
         }
       : {
-          $set: { lastAccessedAt: new Date() },
-          $setOnInsert: insertDefaults,
+          $set: {
+            lastAccessedAt: new Date(),
+            role: membershipRole,
+            permissions: initialPermissions,
+          },
+          $setOnInsert: {
+            workspaceId: workspace._id,
+            userId: authenticatedUser._id,
+            status: 'active',
+            invitedBy: owner._id,
+          },
         },
     { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
   );

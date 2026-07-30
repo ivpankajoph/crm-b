@@ -64,6 +64,7 @@ const customerSchema = new mongoose.Schema({
       type: String,
       required: true,
     },
+    status: String,
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User'

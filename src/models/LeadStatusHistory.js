@@ -29,6 +29,20 @@ const leadStatusHistorySchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    entryType: {
+      type: String,
+      enum: ['status_change', 'details_saved'],
+      default: 'status_change',
+    },
+    details: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
+    comment: {
+      type: String,
+      maxlength: 4000,
+      default: null,
+    },
   },
   { timestamps: true }
 );

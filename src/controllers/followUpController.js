@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import Company from '../models/Company.js';
 import FollowUp from '../models/FollowUp.js';
-import { isAdminUser } from '../utils/hierarchy.js';
+import { resolveLeadVisibility } from '../services/leadAccessService.js';
 import { getFirstReminderAt, parseFollowUpPayload } from '../utils/followUp.js';
 import {
   cancelFollowUpReminder,
@@ -11,10 +11,10 @@ import {
 
 const ACTIVE_STATUSES = ['Pending', 'Snoozed'];
 
-const visibleCompany = async (leadId, user) => {
+const visibleCompany = async (leadId, user, access) => {
   if (!mongoose.isValidObjectId(leadId)) return null;
-  const visibility = isAdminUser(user) ? {} : { assignedTo: user._id };
-  return Company.findOne({ _id: leadId, ...visibility });
+  const { query } = await resolveLeadVisibility(user, access);
+  return Company.findOne({ _id: leadId, ...query });
 };
 
 const attachmentFromRequest = (req) => req.file ? {
@@ -24,13 +24,14 @@ const attachmentFromRequest = (req) => req.file ? {
 
 const activeKeyFor = (leadId) => `company:${leadId}`;
 
-const accessibleActiveFollowUp = async (id, user) => {
+const accessibleActiveFollowUp = async (id, user, access) => {
   if (!mongoose.isValidObjectId(id)) return null;
-  const visibility = isAdminUser(user) ? {} : { assignedTo: user._id };
+  const { query } = await resolveLeadVisibility(user, access);
+  const leadIds = await Company.find(query).distinct('_id');
   return FollowUp.findOne({
     _id: id,
     status: { $in: ACTIVE_STATUSES },
-    ...visibility,
+    lead: { $in: leadIds },
   });
 };
 
@@ -44,7 +45,7 @@ const clearCompanyFollowUp = (company) => {
 
 export const saveLeadFollowUp = async (req, res) => {
   try {
-    const company = await visibleCompany(req.params.leadId, req.user);
+    const company = await visibleCompany(req.params.leadId, req.user, req.access);
     if (!company) return res.status(404).json({ message: 'Company lead not found' });
 
     const required = req.body.followUpRequired === true || req.body.followUpRequired === 'true';
@@ -74,7 +75,7 @@ export const saveLeadFollowUp = async (req, res) => {
       followUpReminder: req.body.followUpReminder,
     });
     const message = String(req.body.message || '').trim();
-    if (!message) return res.status(400).json({ message: 'Follow-up message is required' });
+    if (!message) return res.status(400).json({ message: 'Please write comment' });
     if (message.length > 4000) return res.status(400).json({ message: 'Follow-up message cannot exceed 4000 characters' });
 
     const assignees = Array.isArray(company.assignedTo) && company.assignedTo.length
@@ -131,7 +132,7 @@ export const saveLeadFollowUp = async (req, res) => {
 
 export const getLeadFollowUps = async (req, res) => {
   try {
-    const company = await visibleCompany(req.params.leadId, req.user);
+    const company = await visibleCompany(req.params.leadId, req.user, req.access);
     if (!company) return res.status(404).json({ message: 'Company lead not found' });
     const items = await FollowUp.find({ lead: company._id })
       .populate('createdBy completedBy', 'name')
@@ -163,7 +164,7 @@ export const getPendingFollowUps = async (req, res) => {
 
 export const completeFollowUp = async (req, res) => {
   try {
-    const followUp = await accessibleActiveFollowUp(req.params.id, req.user);
+    const followUp = await accessibleActiveFollowUp(req.params.id, req.user, req.access);
     if (!followUp) return res.status(404).json({ message: 'Active follow-up not found' });
     followUp.status = 'Completed';
     followUp.activeKey = undefined;
@@ -189,7 +190,7 @@ export const snoozeFollowUp = async (req, res) => {
     if (![5, 15, 30, 60].includes(minutes)) {
       return res.status(400).json({ message: 'Snooze duration is invalid' });
     }
-    const followUp = await accessibleActiveFollowUp(req.params.id, req.user);
+    const followUp = await accessibleActiveFollowUp(req.params.id, req.user, req.access);
     if (!followUp) return res.status(404).json({ message: 'Active follow-up not found' });
     const snoozedUntil = new Date(Date.now() + minutes * 60 * 1000);
     followUp.status = 'Snoozed';

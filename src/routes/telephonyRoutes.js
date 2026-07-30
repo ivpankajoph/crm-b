@@ -1,5 +1,7 @@
 import express from 'express';
-import { adminOnly, protect } from '../middleware/authMiddleware.js';
+import { protect } from '../middleware/authMiddleware.js';
+import { requirePermission } from '../middleware/permissionMiddleware.js';
+import { PERMISSIONS } from '../constants/permissions.js';
 import { answerBrowserCall, answerClickToCall, buyNumber, finalizeBrowserCall, getCallLogDetails, getTelephonyConfig, hangupClickToCall, listCallLogs, recordingCallback, searchNumbers, selectNumber, transcriptionCallback } from '../controllers/telephonyController.js';
 
 const router = express.Router();
@@ -8,11 +10,11 @@ router.post('/webhooks/hangup/:callLogId/:token', hangupClickToCall);
 router.post('/webhooks/browser-answer', answerBrowserCall);
 router.post('/webhooks/recording/:callLogId/:token', recordingCallback);
 router.post('/webhooks/transcription/:callLogId/:token', transcriptionCallback);
-router.get('/calls', protect, listCallLogs);
-router.get('/calls/:callLogId', protect, getCallLogDetails);
-router.post('/calls/:callLogId/finalize', protect, finalizeBrowserCall);
-router.get('/numbers', protect, adminOnly, getTelephonyConfig);
-router.get('/numbers/search', protect, adminOnly, searchNumbers);
-router.post('/numbers/buy', protect, adminOnly, buyNumber);
-router.put('/numbers/default', protect, adminOnly, selectNumber);
+router.get('/calls', protect, requirePermission(PERMISSIONS.CALLS_VIEW), listCallLogs);
+router.get('/calls/:callLogId', protect, requirePermission(PERMISSIONS.CALLS_VIEW), getCallLogDetails);
+router.post('/calls/:callLogId/finalize', protect, requirePermission(PERMISSIONS.CALLS_MANAGE), finalizeBrowserCall);
+router.get('/numbers', protect, requirePermission(PERMISSIONS.CALLS_MANAGE), getTelephonyConfig);
+router.get('/numbers/search', protect, requirePermission(PERMISSIONS.CALLS_MANAGE), searchNumbers);
+router.post('/numbers/buy', protect, requirePermission(PERMISSIONS.CALLS_MANAGE), buyNumber);
+router.put('/numbers/default', protect, requirePermission(PERMISSIONS.CALLS_MANAGE), selectNumber);
 export default router;

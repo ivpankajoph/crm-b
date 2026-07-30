@@ -25,16 +25,22 @@ export const reportDateRange = (period, now = new Date()) => {
   return { $gte: start, $lte: end };
 };
 
-const leadMatch = ({ period, status }) => {
+const leadMatch = ({ period, status, visibleUserIds }) => {
   const match = {};
   const dateRange = reportDateRange(period);
   if (dateRange) match.createdAt = dateRange;
   if (status && status !== 'All') match.leadStatus = status;
+  if (Array.isArray(visibleUserIds)) {
+    match.$or = [
+      { createdBy: { $in: visibleUserIds } },
+      { assignedTo: { $in: visibleUserIds } },
+    ];
+  }
   return match;
 };
 
-export const buildSalesReportPipeline = ({ period, status } = {}) => {
-  const match = leadMatch({ period, status });
+export const buildSalesReportPipeline = ({ period, status, visibleUserIds } = {}) => {
+  const match = leadMatch({ period, status, visibleUserIds });
   return [
     { $match: match },
     {
@@ -92,8 +98,8 @@ export const buildSalesReportPipeline = ({ period, status } = {}) => {
   ];
 };
 
-export const buildMarketingReportPipeline = ({ period } = {}) => {
-  const match = leadMatch({ period });
+export const buildMarketingReportPipeline = ({ period, visibleUserIds } = {}) => {
+  const match = leadMatch({ period, visibleUserIds });
   return [
     { $match: match },
     {
@@ -147,8 +153,8 @@ const runOptionalPage = async ({ Model, pipeline, sort, query }) => {
   return pagedData(result?.items || [], paginationMeta({ page, limit, total }));
 };
 
-const getSalesReportFallback = async ({ period, status, query }) => {
-  const match = leadMatch({ period, status });
+const getSalesReportFallback = async ({ period, status, visibleUserIds, query }) => {
+  const match = leadMatch({ period, status, visibleUserIds });
   const [customers, companies] = await Promise.all([
     Customer.find(match)
       .select('name leadStatus createdAt updatedAt createdBy')
@@ -185,7 +191,11 @@ const getSalesReportFallback = async ({ period, status, query }) => {
 };
 
 export const getSalesReportData = async (query = {}) => {
-  const options = { period: query.period, status: query.status };
+  const options = {
+    period: query.period,
+    status: query.status,
+    visibleUserIds: query._visibleUserIds,
+  };
   if (!isFeatureEnabled('REPORT_AGGREGATIONS_V2', true)) {
     return getSalesReportFallback({ ...options, query });
   }
@@ -198,7 +208,10 @@ export const getSalesReportData = async (query = {}) => {
 };
 
 const getMarketingReportFallback = async (query) => {
-  const match = leadMatch({ period: query.period });
+  const match = leadMatch({
+    period: query.period,
+    visibleUserIds: query._visibleUserIds,
+  });
   const [customers, companies] = await Promise.all([
     Customer.find(match).select('name leadStatus createdAt').lean(),
     Company.find(match).select('companyName leadStatus createdAt').lean(),
@@ -232,7 +245,10 @@ export const getMarketingReportData = async (query = {}) => {
   }
   return runOptionalPage({
     Model: Customer,
-    pipeline: buildMarketingReportPipeline({ period: query.period }),
+    pipeline: buildMarketingReportPipeline({
+      period: query.period,
+      visibleUserIds: query._visibleUserIds,
+    }),
     sort: { dateAcquired: -1, id: -1 },
     query,
   });
@@ -257,6 +273,7 @@ export const mergeUserReportRows = ({ users, customerCounts, companyCounts, meet
 
 export const getUserReportData = async (query = {}) => {
   const filter = {};
+  if (Array.isArray(query._visibleUserIds)) filter._id = { $in: query._visibleUserIds };
   const dateRange = reportDateRange(query.period);
   if (dateRange) filter.createdAt = dateRange;
   const paginationRequested = query.page !== undefined || query.limit !== undefined;
@@ -287,6 +304,7 @@ export const getUserReportData = async (query = {}) => {
 
 export const getMeetingReportData = async (query = {}) => {
   const filter = { type: 'Meeting' };
+  if (Array.isArray(query._visibleUserIds)) filter.createdBy = { $in: query._visibleUserIds };
   if (query.status && query.status !== 'All') filter.status = query.status;
   const dateRange = reportDateRange(query.period);
   if (dateRange) filter.date = dateRange;

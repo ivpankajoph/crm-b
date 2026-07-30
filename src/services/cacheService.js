@@ -97,9 +97,19 @@ const getMetricsVersion = async () => (
   await runRedis((client) => client.get('crm:lead-metrics:version')) || '0'
 );
 
-export const buildDashboardMetricsCacheKey = async ({ userId, role, period, month, year, implementation = 'v2' }) => {
+export const buildDashboardMetricsCacheKey = async ({
+  userId,
+  role,
+  period,
+  month,
+  year,
+  implementation = 'v2',
+  accessScope = 'own',
+  visibleUserIds = [],
+}) => {
   const version = await getMetricsVersion();
-  return `dashboard:metrics:v${version}:${implementation}:${userId}:${role}:${period}:${month || ''}:${year || ''}`;
+  const visibilityHash = stableFiltersHash({ accessScope, visibleUserIds });
+  return `dashboard:metrics:v${version}:${implementation}:${userId}:${role}:${period}:${month || ''}:${year || ''}:${visibilityHash}`;
 };
 
 export const buildLeadStatsCacheKey = async ({ userId, role, filters }) => {

@@ -26,3 +26,26 @@ export const requireEmailMarketingPermission =
 
     return next();
   };
+
+export const requireAnyEmailMarketingPermission =
+  (...requiredPermissions) =>
+  (req, res, next) => {
+    if (!req.user || !req.emailMarketing) {
+      return errorResponse(res, 401, 'Email Marketing authentication required');
+    }
+
+    const granted = new Set(req.emailMarketing.permissions || []);
+    if (requiredPermissions.some((permission) => granted.has(permission))) {
+      return next();
+    }
+
+    return errorResponse(
+      res,
+      403,
+      'Insufficient Email Marketing permission',
+      requiredPermissions.map((permission) => ({
+        field: 'permission',
+        message: `Requires one of: ${permission}`,
+      })),
+    );
+  };

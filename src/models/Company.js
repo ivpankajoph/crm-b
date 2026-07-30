@@ -123,6 +123,7 @@ const companySchema = new mongoose.Schema({
   },
   comments: [{
     text: { type: String, required: true },
+    status: String,
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     createdAt: { type: Date, default: Date.now },
     attachment: {

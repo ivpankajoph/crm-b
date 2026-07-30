@@ -1,7 +1,7 @@
-import Role from '../models/Role.js';
 import User from '../models/User.js';
 import jwt from 'jsonwebtoken';
 import { successResponse, errorResponse } from '../utils/response.js';
+import { resolveEffectiveAccess } from '../services/accessControlService.js';
 
 // Generate JWT
 const generateToken = (res, userId) => {
@@ -29,16 +29,7 @@ export const login = async (req, res, next) => {
     const user = await User.findOne({ email });
 
     if (user && (await user.matchPassword(password))) {
-      let permissions = [];
-      if (user.role === 'admin') {
-        // Admin has all permissions conceptually, but frontend will handle 'admin' check.
-        // We can just pass the role.
-      } else {
-        const roleDoc = await Role.findOne({ name: user.role });
-        if (roleDoc) {
-          permissions = roleDoc.permissions || [];
-        }
-      }
+      const access = await resolveEffectiveAccess(user);
 
       generateToken(res, user._id);
       return successResponse(res, 200, 'Login successful', {
@@ -46,7 +37,12 @@ export const login = async (req, res, next) => {
         name: user.name,
         email: user.email,
         role: user.role,
-        permissions,
+        permissions: access.permissions,
+        grants: access.grants,
+        scopes: access.scopes,
+        teamIds: access.teamIds,
+        roleId: access.roleId,
+        accessVersion: access.accessVersion,
       });
     } else {
       return errorResponse(res, 401, 'Invalid email or password');
@@ -78,20 +74,19 @@ export const getMe = async (req, res, next) => {
   try {
     const user = await User.findById(req.user._id);
     if (user) {
-      let permissions = [];
-      if (user.role !== 'admin') {
-        const roleDoc = await Role.findOne({ name: user.role });
-        if (roleDoc) {
-          permissions = roleDoc.permissions || [];
-        }
-      }
+      const access = await resolveEffectiveAccess(user);
 
       return successResponse(res, 200, 'User profile fetched', {
         _id: user._id,
         name: user.name,
         email: user.email,
         role: user.role,
-        permissions,
+        permissions: access.permissions,
+        grants: access.grants,
+        scopes: access.scopes,
+        teamIds: access.teamIds,
+        roleId: access.roleId,
+        accessVersion: access.accessVersion,
       });
     } else {
       return errorResponse(res, 404, 'User not found');

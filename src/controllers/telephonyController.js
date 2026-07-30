@@ -3,6 +3,7 @@ import CallLog from '../models/CallLog.js';
 import Setting from '../models/Setting.js';
 import { errorResponse, successResponse } from '../utils/response.js';
 import { normalizePhone, plivoRequest } from '../services/plivoService.js';
+import { resolveUserDataScope, ownershipFilter } from '../services/dataScopeService.js';
 
 const publicBaseUrl = () => (process.env.PUBLIC_API_URL || '').trim().replace(/\/$/, '');
 const xmlEscape = (value) => String(value).replace(/[<>&"']/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[char]));
@@ -247,7 +248,10 @@ export const transcriptionCallback = async (req, res) => {
   return res.sendStatus(204);
 };
 
-const callAccessFilter = (user) => user.role === 'admin' ? {} : { calledBy: user._id };
+const callAccessFilter = async (user, access) => ownershipFilter(
+  await resolveUserDataScope(user, 'calls', access),
+  'calledBy',
+);
 
 const syncActiveCallFromPlivo = async (call) => {
   if (!call?.providerCallId || !['queued', 'ringing'].includes(call.status)) return call;
@@ -294,7 +298,7 @@ export const listCallLogs = async (req, res, next) => {
     await reconcileStaleCallStatuses();
     const page = Math.max(1, Number.parseInt(String(req.query.page || '1'), 10) || 1);
     const limit = 20;
-    const filter = callAccessFilter(req.user);
+    const filter = await callAccessFilter(req.user, req.access);
     if (req.query.status && req.query.status !== 'all') filter.status = req.query.status;
     const [calls, total] = await Promise.all([
       CallLog.find(filter).populate('lead').populate('calledBy', 'name email role').sort({ callDatetime: -1 }).skip((page - 1) * limit).limit(limit),
@@ -307,7 +311,8 @@ export const listCallLogs = async (req, res, next) => {
 export const getCallLogDetails = async (req, res, next) => {
   try {
     await reconcileStaleCallStatuses();
-    const call = await CallLog.findOne({ _id: req.params.callLogId, ...callAccessFilter(req.user) })
+    const accessFilter = await callAccessFilter(req.user, req.access);
+    const call = await CallLog.findOne({ _id: req.params.callLogId, ...accessFilter })
       .populate('lead').populate('calledBy', 'name email role').populate('manualCommentBy', 'name');
     if (!call) return errorResponse(res, 404, 'Call not found');
     await syncActiveCallFromPlivo(call);
@@ -317,7 +322,8 @@ export const getCallLogDetails = async (req, res, next) => {
 
 export const finalizeBrowserCall = async (req, res, next) => {
   try {
-    const call = await CallLog.findOne({ _id: req.params.callLogId, ...callAccessFilter(req.user) });
+    const accessFilter = await callAccessFilter(req.user, req.access);
+    const call = await CallLog.findOne({ _id: req.params.callLogId, ...accessFilter });
     if (!call) return errorResponse(res, 404, 'Call not found');
     const connected = req.body.connected === true;
     call.status = connected ? 'completed' : 'failed';

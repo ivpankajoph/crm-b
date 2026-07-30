@@ -4,6 +4,10 @@ import Role from '../models/Role.js';
 import mongoose from 'mongoose';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { escapeRegex, pagedData, paginationMeta, parsePagination, safeSort } from '../services/listQueryService.js';
+import {
+  combineEmployeeFilters,
+  resolveEmployeeVisibility,
+} from '../services/employeeAccessService.js';
 
 const populateFields = [
   { path: 'manager', select: 'name email role' },
@@ -108,7 +112,8 @@ const buildEmployeePayload = (body) => ({
 
 export const getEmployees = async (req, res, next) => {
   try {
-    const employees = await Employee.find()
+    const visibility = await resolveEmployeeVisibility(req.user, req.access);
+    const employees = await Employee.find(visibility.query)
       .populate(populateFields)
       .sort({ createdAt: -1 });
 
@@ -120,10 +125,14 @@ export const getEmployees = async (req, res, next) => {
 
 export const getEmployeeById = async (req, res, next) => {
   try {
-    const employee = await Employee.findById(req.params.id).populate(populateFields);
+    const visibility = await resolveEmployeeVisibility(req.user, req.access);
+    const employee = await Employee.findOne(combineEmployeeFilters(
+      visibility.query,
+      { _id: req.params.id },
+    )).populate(populateFields);
 
     if (!employee) {
-      return errorResponse(res, 404, 'Employee not found');
+      return errorResponse(res, 404, 'Employee not found or not available to you');
     }
 
     return successResponse(res, 200, 'Employee fetched successfully', employee);
@@ -204,6 +213,7 @@ export const createEmployee = async (req, res, next) => {
 export const getEmployeesPaged = async (req, res, next) => {
   try {
     const { page, limit, skip, search } = parsePagination(req.query);
+    const visibility = await resolveEmployeeVisibility(req.user, req.access);
     const filter = {};
     if (search) {
       const pattern = new RegExp(escapeRegex(search), 'i');
@@ -217,9 +227,10 @@ export const getEmployeesPaged = async (req, res, next) => {
     }
     if (req.query.status && req.query.status !== 'all') filter.status = req.query.status;
     if (req.query.department && req.query.department !== 'all') filter.department = req.query.department;
+    const scopedFilter = combineEmployeeFilters(visibility.query, filter);
 
     const [items, total, departments] = await Promise.all([
-      Employee.find(filter)
+      Employee.find(scopedFilter)
         .select('employeeId firstName lastName email phone designation department employmentType joiningDate workLocation status manager user createdBy createdAt')
         .populate({ path: 'manager', select: 'name email role' })
         .populate({ path: 'user', select: 'name email role parent status isActive' })
@@ -228,8 +239,8 @@ export const getEmployeesPaged = async (req, res, next) => {
         .skip(skip)
         .limit(limit)
         .lean(),
-      Employee.countDocuments(filter),
-      Employee.distinct('department'),
+      Employee.countDocuments(scopedFilter),
+      Employee.distinct('department', visibility.query),
     ]);
     return successResponse(res, 200, 'Employees page fetched successfully', pagedData(
       items,
@@ -243,10 +254,14 @@ export const getEmployeesPaged = async (req, res, next) => {
 
 export const updateEmployee = async (req, res, next) => {
   try {
-    const employee = await Employee.findById(req.params.id);
+    const visibility = await resolveEmployeeVisibility(req.user, req.access);
+    const employee = await Employee.findOne(combineEmployeeFilters(
+      visibility.query,
+      { _id: req.params.id },
+    ));
 
     if (!employee) {
-      return errorResponse(res, 404, 'Employee not found');
+      return errorResponse(res, 404, 'Employee not found or not available to you');
     }
 
     const oldEmail = employee.email;
@@ -279,8 +294,8 @@ export const updateEmployee = async (req, res, next) => {
       return errorResponse(res, 400, managerResult.error);
     }
 
-    const updatedEmployee = await Employee.findByIdAndUpdate(
-      req.params.id,
+    const updatedEmployee = await Employee.findOneAndUpdate(
+      combineEmployeeFilters(visibility.query, { _id: req.params.id }),
       {
         ...buildEmployeePayload({ ...req.body, manager: managerResult.manager }),
         ...(linkedUser?._id ? { user: linkedUser._id } : {}),
@@ -315,10 +330,14 @@ export const updateEmployee = async (req, res, next) => {
 
 export const deleteEmployee = async (req, res, next) => {
   try {
-    const employee = await Employee.findById(req.params.id);
+    const visibility = await resolveEmployeeVisibility(req.user, req.access);
+    const employee = await Employee.findOne(combineEmployeeFilters(
+      visibility.query,
+      { _id: req.params.id },
+    ));
 
     if (!employee) {
-      return errorResponse(res, 404, 'Employee not found');
+      return errorResponse(res, 404, 'Employee not found or not available to you');
     }
 
     await employee.deleteOne();

@@ -11,19 +11,21 @@ import {
   exportMeetingReport,
 } from '../controllers/reportsController.js';
 import { protect } from '../middleware/authMiddleware.js';
+import { requirePermission } from '../middleware/permissionMiddleware.js';
+import { PERMISSIONS } from '../constants/permissions.js';
 
 const router = express.Router();
 
 router.use(protect); // Secure all reports routes
 
-router.get('/dashboard', getDashboardReport);
-router.get('/sales/export', exportSalesReport);
-router.get('/marketing/export', exportMarketingReport);
-router.get('/users/export', exportUserReport);
-router.get('/meetings/export', exportMeetingReport);
-router.get('/sales', getSalesReport);
-router.get('/marketing', getMarketingReport);
-router.get('/users', getUserReport);
-router.get('/meetings', getMeetingReport);
+router.get('/dashboard', requirePermission(PERMISSIONS.REPORTS_VIEW), getDashboardReport);
+router.get('/sales/export', requirePermission(PERMISSIONS.REPORTS_EXPORT), exportSalesReport);
+router.get('/marketing/export', requirePermission(PERMISSIONS.REPORTS_EXPORT), exportMarketingReport);
+router.get('/users/export', requirePermission(PERMISSIONS.REPORTS_EXPORT), exportUserReport);
+router.get('/meetings/export', requirePermission(PERMISSIONS.REPORTS_EXPORT), exportMeetingReport);
+router.get('/sales', requirePermission(PERMISSIONS.REPORTS_VIEW), getSalesReport);
+router.get('/marketing', requirePermission(PERMISSIONS.REPORTS_VIEW), getMarketingReport);
+router.get('/users', requirePermission(PERMISSIONS.REPORTS_VIEW), getUserReport);
+router.get('/meetings', requirePermission(PERMISSIONS.REPORTS_VIEW), getMeetingReport);
 
 export default router;

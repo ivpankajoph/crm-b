@@ -14,7 +14,8 @@
     "test:part2": "node --test src/services/tests/part2Metrics.test.js",
     "test:part3": "node --test src/services/tests/part3Lists.test.js",
     "test:part4": "node --test src/services/tests/part4Performance.test.js",
-    "test:lead-status-date": "node --test src/services/tests/leadStatusDate.test.js"
+    "test:lead-status-date": "node --test src/services/tests/leadStatusDate.test.js",
+    "test:access-control": "node --test src/services/tests/accessControl.test.js"
   },
   "keywords": [],
   "author": "",

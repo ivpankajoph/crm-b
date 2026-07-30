@@ -27,6 +27,29 @@ const userSchema = new mongoose.Schema(
       required: true,
       default: 'user',
     },
+    roleRef: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Role',
+      default: null,
+    },
+    teams: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Team',
+    }],
+    permissionOverrides: {
+      allow: {
+        type: [String],
+        default: [],
+      },
+      deny: {
+        type: [String],
+        default: [],
+      },
+    },
+    scopeOverrides: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
     parent: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
@@ -56,6 +79,8 @@ const userSchema = new mongoose.Schema(
 );
 
 userSchema.index({ parent: 1 });
+userSchema.index({ teams: 1, status: 1 });
+userSchema.index({ roleRef: 1, status: 1 });
 userSchema.index({ role: 1, status: 1 });
 userSchema.index({ createdAt: -1 });
 
@@ -90,9 +115,13 @@ userSchema.pre('save', async function () {
   }
 });
 
-// Return password when returning user object (as requested)
+// Never expose credentials in API responses.
 userSchema.methods.toJSON = function () {
   const user = this.toObject();
+  delete user.password;
+  delete user.plivoEndpointId;
+  delete user.plivoEndpointUsername;
+  delete user.plivoEndpointPassword;
   return user;
 };
 
