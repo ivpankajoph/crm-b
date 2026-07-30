@@ -19,7 +19,7 @@ export const getDashboardMetricsOnly = async (req, res, next) => {
       month: req.query.month,
       year: req.query.year,
     };
-    const { value: metrics, cacheStatus } = await getDashboardMetrics(req.user, filters);
+    const { value: metrics, cacheStatus } = await getDashboardMetrics(req.user, filters, req.access);
     setTiming(res, 'dashboard-metrics', startedAt, cacheStatus);
     res.setHeader('X-Cache', cacheStatus);
     return successResponse(res, 200, 'Dashboard metrics fetched successfully', { metrics });
@@ -40,8 +40,8 @@ export const getDashboardStats = async (req, res, next) => {
       year: req.query.year,
     };
     const [metricsResult, analytics] = await Promise.all([
-      getDashboardMetrics(req.user, filters),
-      getDashboardAnalytics(req.user),
+      getDashboardMetrics(req.user, filters, req.access),
+      getDashboardAnalytics(req.user, req.access),
     ]);
     const dashboardData = {
       metrics: metricsResult.value,

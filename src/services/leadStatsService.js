@@ -7,6 +7,7 @@ import {
   isFeatureEnabled,
   withSafeCache,
 } from './cacheService.js';
+import { resolveLeadVisibility } from './leadAccessService.js';
 
 const TRACKED_STATUSES = ['Demo Scheduled', 'Follow Up', 'Prospective', 'Committed', 'Converted', 'Not Interested'];
 
@@ -39,9 +40,9 @@ const todayRange = () => {
   return { start, end };
 };
 
-export const buildLeadStatsMatch = (user, filters) => {
+export const buildLeadStatsMatch = (user, filters, visibilityOverride) => {
   const { period = 'today', startDate: startDateParam, endDate: endDateParam, month, year } = filters;
-  const matchStage = visibilityQuery(user);
+  const matchStage = visibilityOverride || visibilityQuery(user);
   let startDate = new Date();
   let endDate = new Date();
 
@@ -108,8 +109,8 @@ const historyVisibilityLookup = (from, as, matchStage) => ({
   },
 });
 
-export const calculateLeadStatsAggregated = async (user, filters) => {
-  const matchStage = buildLeadStatsMatch(user, filters);
+export const calculateLeadStatsAggregated = async (user, filters, visibilityOverride) => {
+  const matchStage = buildLeadStatsMatch(user, filters, visibilityOverride);
   const { start, end } = todayRange();
   if (filters.type === 'Company') {
     const [companyGroups, todayDemo, todayHistory] = await Promise.all([
@@ -191,8 +192,8 @@ export const calculateLeadStatsAggregated = async (user, filters) => {
   return result;
 };
 
-export const calculateLeadStatsLegacy = async (user, filters) => {
-  const matchStage = buildLeadStatsMatch(user, filters);
+export const calculateLeadStatsLegacy = async (user, filters, visibilityOverride) => {
+  const matchStage = buildLeadStatsMatch(user, filters, visibilityOverride);
   const result = emptyLeadStats();
   if (filters.type === 'Company') {
     const statuses = ['Demo Scheduled', 'Interested', 'Not Interested', 'Prospective', 'Committed', 'Converted', 'Follow Up'];
@@ -266,15 +267,21 @@ export const calculateLeadStatsLegacy = async (user, filters) => {
 
 export const getCachedLeadStats = async (user, filters) => {
   const useAggregation = isFeatureEnabled('LEAD_STATS_AGGREGATION_V2');
+  const visibility = await resolveLeadVisibility(user);
   const key = await buildLeadStatsCacheKey({
     userId: user._id.toString(),
     role: normalizeRole(user.role),
-    filters: { ...filters, implementation: useAggregation ? 'aggregation' : 'legacy' },
+    filters: {
+      ...filters,
+      implementation: useAggregation ? 'aggregation' : 'legacy',
+      accessScope: visibility.scope,
+      visibleUserIds: visibility.userIds.map(String).sort(),
+    },
   });
   const result = await withSafeCache({ key }, () => (
     useAggregation
-      ? calculateLeadStatsAggregated(user, filters)
-      : calculateLeadStatsLegacy(user, filters)
+      ? calculateLeadStatsAggregated(user, filters, visibility.query)
+      : calculateLeadStatsLegacy(user, filters, visibility.query)
   ));
   return {
     ...result,

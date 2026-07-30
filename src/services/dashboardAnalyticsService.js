@@ -3,7 +3,8 @@ import Company from '../models/Company.js';
 import User from '../models/User.js';
 import CallLog from '../models/CallLog.js';
 import LeadStatusHistory from '../models/LeadStatusHistory.js';
-import { getVisibleUserIds } from '../utils/hierarchy.js';
+import { resolveUserDataScope } from './dataScopeService.js';
+import mongoose from 'mongoose';
 
 const aggregateLeadOwnership = (Model, userIds) => Model.aggregate([
   {
@@ -21,18 +22,33 @@ const aggregateLeadOwnership = (Model, userIds) => Model.aggregate([
   { $group: { _id: '$owners', totalLeads: { $sum: 1 } } },
 ]);
 
-export const getDashboardAnalytics = async (user) => {
-  const userIds = await getVisibleUserIds(user);
+export const getDashboardAnalytics = async (user, access) => {
+  const [leadVisibility, callVisibility] = await Promise.all([
+    resolveUserDataScope(user, 'leads', access),
+    resolveUserDataScope(user, 'calls', access),
+  ]);
+  const rawLeadUserIds = leadVisibility.scope === 'all'
+    ? (await User.find({}).distinct('_id'))
+    : leadVisibility.userIds;
+  const rawCallUserIds = callVisibility.scope === 'all'
+    ? (await User.find({}).distinct('_id'))
+    : callVisibility.userIds;
+  const asObjectIds = (ids) => ids
+    .filter((id) => mongoose.isValidObjectId(id))
+    .map((id) => new mongoose.Types.ObjectId(id));
+  const leadUserIds = asObjectIds(rawLeadUserIds);
+  const callUserIds = asObjectIds(rawCallUserIds);
+  const userIds = Array.from(new Set([...leadUserIds, ...callUserIds].map(String)));
   const [callAgg, teamUsers, statusTrend, customerOwnership, companyOwnership, callsByUser] = await Promise.all([
     CallLog.aggregate([
-      { $match: { calledBy: { $in: userIds } } },
+      { $match: { calledBy: { $in: callUserIds } } },
       { $group: { _id: null, totalCalls: { $sum: 1 }, averageQualityScore: { $avg: '$aiQualityScore' } } },
     ]),
     User.find({ _id: { $in: userIds } }).select('name role parent').lean(),
     LeadStatusHistory.aggregate([
       {
         $match: {
-          changedBy: { $in: userIds },
+          changedBy: { $in: leadUserIds },
           newStatus: { $in: ['Demo Scheduled', 'Follow Up', 'Prospective', 'Committed', 'Converted', 'Not Interested'] },
         },
       },
@@ -47,10 +63,10 @@ export const getDashboardAnalytics = async (user) => {
       },
       { $sort: { '_id.day': 1 } },
     ]),
-    aggregateLeadOwnership(Customer, userIds),
-    aggregateLeadOwnership(Company, userIds),
+    aggregateLeadOwnership(Customer, leadUserIds),
+    aggregateLeadOwnership(Company, leadUserIds),
     CallLog.aggregate([
-      { $match: { calledBy: { $in: userIds } } },
+      { $match: { calledBy: { $in: callUserIds } } },
       { $group: { _id: '$calledBy', totalCalls: { $sum: 1 }, averageQualityScore: { $avg: '$aiQualityScore' } } },
     ]),
   ]);

@@ -2,10 +2,50 @@ import User from '../models/User.js';
 import Role from '../models/Role.js';
 import Employee from '../models/Employee.js';
 import { successResponse, errorResponse } from '../utils/response.js';
-import { isAdminUser } from '../utils/hierarchy.js';
 import { logActivity } from '../utils/activity.js';
 import { escapeRegex, pagedData, paginationMeta, parsePagination, safeSort } from '../services/listQueryService.js';
 import { reconcileUserEmployee } from '../services/employeeUserReconciliationService.js';
+import Team from '../models/Team.js';
+import {
+  PERMISSION_VALUES,
+  normalizePermissionList,
+  sanitizeDataScopes,
+} from '../constants/permissions.js';
+import { resolveUserDataScope } from '../services/dataScopeService.js';
+
+const sanitizeOverrides = (overrides = {}) => ({
+  allow: normalizePermissionList(overrides.allow)
+    .filter((permission) => PERMISSION_VALUES.includes(permission)),
+  deny: normalizePermissionList(overrides.deny)
+    .filter((permission) => PERMISSION_VALUES.includes(permission)),
+});
+
+const resolveRoleInput = async ({ role, roleId }) => {
+  const roleDoc = roleId
+    ? await Role.findById(roleId)
+    : role ? await Role.findOne({ name: role }) : null;
+
+  if ((roleId || role) && !roleDoc) {
+    const error = new Error('Selected role does not exist');
+    error.statusCode = 400;
+    throw error;
+  }
+  return roleDoc;
+};
+
+const syncUserTeams = async (userId, teamIds = []) => {
+  const normalizedTeamIds = Array.from(new Set(
+    (Array.isArray(teamIds) ? teamIds : []).map(String),
+  ));
+  await Team.updateMany({ members: userId }, { $pull: { members: userId } });
+  if (normalizedTeamIds.length) {
+    await Team.updateMany(
+      { _id: { $in: normalizedTeamIds } },
+      { $addToSet: { members: userId } },
+    );
+  }
+  return normalizedTeamIds;
+};
 
 // @desc    Get all users
 // @route   GET /api/users
@@ -35,6 +75,8 @@ export const getUsers = async (req, res, next) => {
     const users = await User.find(filter)
       .select('-password -plivoEndpointId -plivoEndpointUsername -plivoEndpointPassword')
       .populate('parent', 'name role email')
+      .populate('roleRef', 'name level status')
+      .populate('teams', 'name status')
       .populate('createdBy', 'name role email')
       .sort({ createdAt: -1 });
     return successResponse(res, 200, 'Users fetched successfully', users);
@@ -55,8 +97,10 @@ export const getUsersPaged = async (req, res, next) => {
     if (req.query.status && req.query.status !== 'all') filter.status = req.query.status;
     const [items, total] = await Promise.all([
       User.find(filter)
-        .select('name email phone role parent createdBy status isActive createdAt')
+        .select('name email phone role roleRef teams permissionOverrides scopeOverrides parent createdBy status isActive createdAt')
         .populate('parent', 'name role email')
+        .populate('roleRef', 'name level status')
+        .populate('teams', 'name status')
         .populate('createdBy', 'name role email')
         .sort(safeSort(req.query, ['createdAt', 'name', 'role', 'status']))
         .skip(skip)
@@ -78,6 +122,13 @@ export const getUserOptions = async (req, res, next) => {
     const purpose = String(req.query.purpose || 'meeting');
     const search = String(req.query.search || '').trim();
     const filter = { isActive: true };
+    if (purpose === 'attendance') {
+      const visibility = await resolveUserDataScope(req.user, 'reports');
+      if (visibility.scope === 'none') filter._id = { $exists: false };
+      if (visibility.scope !== 'all' && visibility.scope !== 'none') {
+        filter._id = { $in: visibility.userIds };
+      }
+    }
     if (purpose === 'manager') {
       filter.$or = [
         { role: { $regex: /^admin$/i } },
@@ -112,22 +163,37 @@ export const getUserOptions = async (req, res, next) => {
 // @access  Private
 export const createUser = async (req, res, next) => {
   try {
-    if (!isAdminUser(req.user)) {
-      return errorResponse(res, 403, 'Only admin can create users');
-    }
-
-    const { name, email, password, role, phone, parent, status } = req.body;
+    const {
+      name,
+      email,
+      password,
+      role,
+      roleId,
+      phone,
+      parent,
+      status,
+      teamIds,
+      permissionOverrides,
+      scopeOverrides,
+    } = req.body;
 
     const userExists = await User.findOne({ email });
     if (userExists) {
       return errorResponse(res, 400, 'User with this email already exists');
     }
 
+    const roleDoc = await resolveRoleInput({ role, roleId });
+    const assignedRole = roleDoc?.name || role;
+
     const user = await User.create({
       name,
       email,
       password,
-      role,
+      role: assignedRole,
+      roleRef: roleDoc?._id || null,
+      teams: Array.isArray(teamIds) ? teamIds : [],
+      permissionOverrides: sanitizeOverrides(permissionOverrides),
+      scopeOverrides: sanitizeDataScopes(scopeOverrides),
       phone,
       parent: parent || null,
       status: status || 'active',
@@ -136,7 +202,8 @@ export const createUser = async (req, res, next) => {
     });
 
     // If the role exists in the Role collection, increment its usersCount
-    await Role.findOneAndUpdate({ name: role }, { $inc: { usersCount: 1 } });
+    await Role.findOneAndUpdate({ name: assignedRole }, { $inc: { usersCount: 1 } });
+    await syncUserTeams(user._id, user.teams);
 
     // Sync to Employee collection
     const nameParts = name.split(' ');
@@ -178,11 +245,20 @@ export const createUser = async (req, res, next) => {
 // @access  Private
 export const updateUser = async (req, res, next) => {
   try {
-    if (!isAdminUser(req.user)) {
-      return errorResponse(res, 403, 'Only admin can edit users');
-    }
-
-    const { name, email, password, role, phone, parent, status, isActive } = req.body;
+    const {
+      name,
+      email,
+      password,
+      role,
+      roleId,
+      phone,
+      parent,
+      status,
+      isActive,
+      teamIds,
+      permissionOverrides,
+      scopeOverrides,
+    } = req.body;
     const user = await User.findById(req.params.id);
 
     if (!user) {
@@ -217,13 +293,31 @@ export const updateUser = async (req, res, next) => {
       user.password = password;
     }
     
-    if (role && role !== oldRole) {
-      user.role = role;
+    const roleDoc = (roleId || role)
+      ? await resolveRoleInput({ role, roleId })
+      : null;
+    const nextRole = roleDoc?.name || role;
+    if (nextRole && nextRole !== oldRole) {
+      user.role = nextRole;
+      user.roleRef = roleDoc?._id || null;
       await Role.findOneAndUpdate({ name: oldRole }, { $inc: { usersCount: -1 } });
-      await Role.findOneAndUpdate({ name: role }, { $inc: { usersCount: 1 } });
+      await Role.findOneAndUpdate({ name: nextRole }, { $inc: { usersCount: 1 } });
+    } else if (roleDoc) {
+      user.roleRef = roleDoc._id;
+    }
+    const pendingTeamIds = teamIds !== undefined
+      ? Array.from(new Set((Array.isArray(teamIds) ? teamIds : []).map(String)))
+      : null;
+    if (pendingTeamIds) user.teams = pendingTeamIds;
+    if (permissionOverrides !== undefined) {
+      user.permissionOverrides = sanitizeOverrides(permissionOverrides);
+    }
+    if (scopeOverrides !== undefined) {
+      user.scopeOverrides = sanitizeDataScopes(scopeOverrides);
     }
 
     await user.save();
+    if (pendingTeamIds) await syncUserTeams(user._id, pendingTeamIds);
 
     // Sync updates to Employee
     const nameParts = user.name.split(' ');
@@ -264,15 +358,15 @@ export const deleteUser = async (req, res, next) => {
       return errorResponse(res, 404, 'User not found');
     }
     
-    if (!isAdminUser(req.user)) {
-      return errorResponse(res, 403, 'Only admin can delete users');
-    }
-
     // Decrease usersCount in Role
     await Role.findOneAndUpdate({ name: user.role }, { $inc: { usersCount: -1 } });
 
     // Also delete the linked employee if one exists (by email)
     await Employee.findOneAndDelete({ email: user.email });
+    await Promise.all([
+      Team.updateMany({ members: user._id }, { $pull: { members: user._id } }),
+      Team.updateMany({ manager: user._id }, { $set: { manager: null } }),
+    ]);
 
     await User.findByIdAndDelete(req.params.id);
 

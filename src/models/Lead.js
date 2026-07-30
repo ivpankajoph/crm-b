@@ -50,6 +50,26 @@ const leadSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
   }],
+  comments: [{
+    text: {
+      type: String,
+      required: true,
+      maxlength: 4000,
+    },
+    status: String,
+    createdBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now,
+    },
+    attachment: {
+      url: String,
+      fileType: String,
+    },
+  }],
 }, {
   timestamps: true,
 });

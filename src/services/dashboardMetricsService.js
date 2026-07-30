@@ -6,6 +6,7 @@ import {
   isFeatureEnabled,
   withSafeCache,
 } from './cacheService.js';
+import { resolveLeadVisibility } from './leadAccessService.js';
 
 export const PIPELINE_STATUSES = [
   'New',
@@ -55,8 +56,8 @@ const applyDashboardDateRange = (matchStage, { period = 'today', month, year }) 
   return { ...matchStage, createdAt: { $gte: start, $lte: end } };
 };
 
-export const buildDashboardMetricMatch = (user, filters) => {
-  const visibility = isAdminUser(user) ? {} : { assignedTo: user._id };
+export const buildDashboardMetricMatch = (user, filters, visibilityOverride) => {
+  const visibility = visibilityOverride || (isAdminUser(user) ? {} : { assignedTo: user._id });
   return applyDashboardDateRange(visibility, filters);
 };
 
@@ -79,8 +80,8 @@ const mapGroupedMetrics = (customerStats, companyStats) => {
   };
 };
 
-export const calculateDashboardMetricsAggregated = async (user, filters) => {
-  const matchStage = buildDashboardMetricMatch(user, filters);
+export const calculateDashboardMetricsAggregated = async (user, filters, visibilityOverride) => {
+  const matchStage = buildDashboardMetricMatch(user, filters, visibilityOverride);
   const groupPipeline = [
     { $match: matchStage },
     { $group: { _id: { $ifNull: ['$leadStatus', 'New'] }, count: { $sum: 1 } } },
@@ -92,8 +93,8 @@ export const calculateDashboardMetricsAggregated = async (user, filters) => {
   return mapGroupedMetrics(customerStats, companyStats);
 };
 
-export const calculateDashboardMetricsLegacy = async (user, filters) => {
-  const matchStage = buildDashboardMetricMatch(user, filters);
+export const calculateDashboardMetricsLegacy = async (user, filters, visibilityOverride) => {
+  const matchStage = buildDashboardMetricMatch(user, filters, visibilityOverride);
   const metrics = emptyDashboardMetrics();
   const statusToKey = {
     New: 'new',
@@ -119,8 +120,9 @@ export const calculateDashboardMetricsLegacy = async (user, filters) => {
   return metrics;
 };
 
-export const getDashboardMetrics = async (user, filters) => {
+export const getDashboardMetrics = async (user, filters, access) => {
   const useAggregation = isFeatureEnabled('DASHBOARD_METRICS_V2');
+  const visibility = await resolveLeadVisibility(user, access);
   const cacheKey = await buildDashboardMetricsCacheKey({
     userId: user._id.toString(),
     role: normalizeRole(user.role),
@@ -128,11 +130,13 @@ export const getDashboardMetrics = async (user, filters) => {
     month: filters.month,
     year: filters.year,
     implementation: useAggregation ? 'aggregation' : 'legacy',
+    accessScope: visibility.scope,
+    visibleUserIds: visibility.userIds.map(String).sort(),
   });
   const result = await withSafeCache({ key: cacheKey }, () => (
     useAggregation
-      ? calculateDashboardMetricsAggregated(user, filters)
-      : calculateDashboardMetricsLegacy(user, filters)
+      ? calculateDashboardMetricsAggregated(user, filters, visibility.query)
+      : calculateDashboardMetricsLegacy(user, filters, visibility.query)
   ));
   return { ...result, queryCount: useAggregation ? 2 : 16 };
 };

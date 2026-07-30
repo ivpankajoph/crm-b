@@ -7,22 +7,46 @@ import EmailMarketingTemplate, {
 import { recordEmailMarketingAudit } from '../services/auditService.js';
 import { buildWorkspaceFilter } from '../services/workspaceService.js';
 import { escapeRegex } from '../utils/segmentFilter.js';
+import { EMAIL_MARKETING_PERMISSIONS } from '../constants/permissions.js';
+import { getSharedEmailTemplateIds } from '../services/sharedTemplateService.js';
+
+const buildTemplateVisibility = async (req) => {
+  const permissions = new Set(req.emailMarketing.permissions || []);
+  if (permissions.has(EMAIL_MARKETING_PERMISSIONS.EDIT_CONTENT)) return {};
+
+  const visibility = [];
+  if (permissions.has(EMAIL_MARKETING_PERMISSIONS.CREATE_CONTENT)) {
+    visibility.push({ createdBy: req.user._id });
+  }
+  if (permissions.has(EMAIL_MARKETING_PERMISSIONS.VIEW_SHARED_TEMPLATES)) {
+    const sharedIds = await getSharedEmailTemplateIds(req.user, 'use');
+    if (sharedIds?.length) {
+      visibility.push({ _id: { $in: sharedIds }, status: 'active' });
+    }
+  }
+
+  return visibility.length ? { $or: visibility } : { _id: { $in: [] } };
+};
 
 export const listTemplates = async (req, res, next) => {
   try {
     const { page, limit, search, type, status, category } = req.validated.query;
+    const visibility = await buildTemplateVisibility(req);
     const filter = buildWorkspaceFilter(req.emailMarketing, {
-      ...(search
-        ? {
+      $and: [
+        visibility,
+        ...(search
+          ? [{
             $or: [
               { name: new RegExp(escapeRegex(search), 'i') },
               { subject: new RegExp(escapeRegex(search), 'i') },
             ],
-          }
-        : {}),
-      ...(type !== 'all' ? { type } : {}),
-      ...(status !== 'all' ? { status } : {}),
-      ...(category ? { category } : {}),
+          }]
+          : []),
+        ...(type !== 'all' ? [{ type }] : []),
+        ...(status !== 'all' ? [{ status }] : []),
+        ...(category ? [{ category }] : []),
+      ],
     });
     const [items, total] = await Promise.all([
       EmailMarketingTemplate.find(filter)
@@ -48,8 +72,11 @@ export const listTemplates = async (req, res, next) => {
 
 export const getTemplate = async (req, res, next) => {
   try {
+    const visibility = await buildTemplateVisibility(req);
     const template = await EmailMarketingTemplate.findOne(
-      buildWorkspaceFilter(req.emailMarketing, { _id: req.validated.params.id }),
+      buildWorkspaceFilter(req.emailMarketing, {
+        $and: [{ _id: req.validated.params.id }, visibility],
+      }),
     ).lean();
     if (!template) return errorResponse(res, 404, 'Template not found');
     return successResponse(res, 200, 'Template fetched successfully', template);
@@ -102,8 +129,11 @@ export const updateTemplate = async (req, res, next) => {
 
 export const duplicateTemplate = async (req, res, next) => {
   try {
+    const visibility = await buildTemplateVisibility(req);
     const source = await EmailMarketingTemplate.findOne(
-      buildWorkspaceFilter(req.emailMarketing, { _id: req.validated.params.id }),
+      buildWorkspaceFilter(req.emailMarketing, {
+        $and: [{ _id: req.validated.params.id }, visibility],
+      }),
     ).lean();
     if (!source) return errorResponse(res, 404, 'Template not found');
     const template = await EmailMarketingTemplate.create({

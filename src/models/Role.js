@@ -23,12 +23,35 @@ const roleSchema = new mongoose.Schema(
     },
     permissions: [{
       type: String,
-    }]
+    }],
+    grants: [{
+      type: String,
+      trim: true,
+    }],
+    dataScopes: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+    isSystemRole: {
+      type: Boolean,
+      default: false,
+    },
+    status: {
+      type: String,
+      enum: ['active', 'inactive'],
+      default: 'active',
+    },
+    permissionVersion: {
+      type: Number,
+      default: 1,
+    },
   },
   {
     timestamps: true,
   }
 );
+
+roleSchema.index({ status: 1, level: 1 });
 
 const Role = mongoose.model('Role', roleSchema);
 

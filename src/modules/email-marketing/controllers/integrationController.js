@@ -15,6 +15,7 @@ import EmailMarketingSubscriber from '../models/EmailMarketingSubscriber.js';
 import EmailMarketingSuppression from '../models/EmailMarketingSuppression.js';
 import EmailMarketingTemplate from '../models/EmailMarketingTemplate.js';
 import { ensureBillingAccount } from '../services/billingService.js';
+import { getSharedEmailTemplateIds } from '../services/sharedTemplateService.js';
 
 const toClient = (value) => {
   if (value === null || value === undefined) return value;
@@ -60,6 +61,26 @@ export const getIntegrationSnapshot = async (req, res, next) => {
     const workspaceId = req.emailMarketing.workspaceId;
     const granted = new Set(req.emailMarketing.permissions);
     const can = (permission) => granted.has(permission);
+    let templateFilter = null;
+    if (can(EMAIL_MARKETING_PERMISSIONS.EDIT_CONTENT)) {
+      templateFilter = { workspaceId };
+    } else if (
+      can(EMAIL_MARKETING_PERMISSIONS.VIEW_SHARED_TEMPLATES)
+      || can(EMAIL_MARKETING_PERMISSIONS.CREATE_CONTENT)
+    ) {
+      const sharedIds = await getSharedEmailTemplateIds(req.user, 'use');
+      const visibility = [];
+      if (can(EMAIL_MARKETING_PERMISSIONS.CREATE_CONTENT)) {
+        visibility.push({ createdBy: req.user._id });
+      }
+      if (sharedIds?.length) {
+        visibility.push({ _id: { $in: sharedIds }, status: 'active' });
+      }
+      templateFilter = {
+        workspaceId,
+        ...(visibility.length ? { $or: visibility } : { _id: { $in: [] } }),
+      };
+    }
     const [
       subscribers,
       templates,
@@ -77,8 +98,8 @@ export const getIntegrationSnapshot = async (req, res, next) => {
             .limit(10000)
             .lean()
         : [],
-      can(EMAIL_MARKETING_PERMISSIONS.EDIT_CONTENT)
-        ? EmailMarketingTemplate.find({ workspaceId })
+      templateFilter
+        ? EmailMarketingTemplate.find(templateFilter)
             .sort({ updatedAt: -1 })
             .limit(1000)
             .lean()

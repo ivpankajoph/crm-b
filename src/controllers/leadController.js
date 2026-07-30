@@ -8,7 +8,7 @@ import CallLog from '../models/CallLog.js';
 import LeadStatusHistory from '../models/LeadStatusHistory.js';
 import FollowUp from '../models/FollowUp.js';
 import { successResponse, errorResponse } from '../utils/response.js';
-import { getDownlineUserIds, isAdminUser, normalizeRole } from '../utils/hierarchy.js';
+import { getDownlineUserIds, isAdminUser } from '../utils/hierarchy.js';
 import { logActivity } from '../utils/activity.js';
 import Setting from '../models/Setting.js';
 import { createPlivoBridge, prepareBrowserCall } from './telephonyController.js';
@@ -20,6 +20,10 @@ import { parseLeadStatusDate } from '../utils/leadStatusDate.js';
 import { parseFollowUpPayload } from '../utils/followUp.js';
 import { parseStatusDetails } from '../utils/statusDetails.js';
 import { cancelFollowUpReminder } from '../services/followUpReminderService.js';
+import { resolveLeadVisibility } from '../services/leadAccessService.js';
+import { resolveEffectiveAccess, userHasPermission } from '../services/accessControlService.js';
+import { PERMISSIONS } from '../constants/permissions.js';
+import LeadMessage from '../models/LeadMessage.js';
 
 const STATUS_ALIASES = {
   demo_scheduled: 'Demo Scheduled',
@@ -44,8 +48,6 @@ const getLeadStatusField = (type) => (type === 'Lead' ? 'status' : 'leadStatus')
 
 const getLeadName = (lead) => lead.companyName || lead.name || lead.customerName || 'lead';
 
-const buildLeadVisibilityQuery = (user) => (isAdminUser(user) ? {} : { assignedTo: user._id });
-
 const normalizeAssignees = (assignedTo) => {
   if (!assignedTo) return [];
   return Array.isArray(assignedTo) ? assignedTo.filter(Boolean) : [assignedTo];
@@ -64,31 +66,23 @@ const ensureAssigneeArray = async (Model, lead) => {
   );
 };
 
-const canAssignToTeam = (user) => {
-  const role = normalizeRole(user?.role);
-  return role === 'team_leader' || role === 'team_manager';
-};
-
-const isTeamLeaderRole = (role) => {
-  const normalizedRole = normalizeRole(role);
-  return normalizedRole === 'team_leader' || normalizedRole === 'team_manager';
-};
-
-const isEmployeeRole = (role) => {
-  const normalizedRole = normalizeRole(role);
-  return normalizedRole === 'employee' || normalizedRole === 'team_member' || normalizedRole === 'user';
+const usersWithLeadAccess = async (users) => {
+  const eligibleIds = await Promise.all(users.map(async (candidate) => {
+    const access = await resolveEffectiveAccess(candidate);
+    return userHasPermission(access, PERMISSIONS.LEADS_VIEW) ? candidate._id : null;
+  }));
+  return eligibleIds.filter(Boolean);
 };
 
 const getAssignableUserIds = async (user) => {
   if (isAdminUser(user)) {
-    const users = await User.find({ isActive: true })
-      .select('_id role')
+    const users = await User.find({
+      isActive: true,
+      _id: { $ne: user._id },
+    })
+      .select('_id role roleRef teams permissionOverrides scopeOverrides isActive')
       .lean();
-    return users.filter((item) => isTeamLeaderRole(item.role)).map((item) => item._id);
-  }
-
-  if (!canAssignToTeam(user)) {
-    return [];
+    return usersWithLeadAccess(users);
   }
 
   const downlineIds = await getDownlineUserIds(user._id);
@@ -103,10 +97,10 @@ const getAssignableUserIds = async (user) => {
     ],
     isActive: true,
   })
-    .select('_id role')
+    .select('_id role roleRef teams permissionOverrides scopeOverrides isActive')
     .lean();
 
-  return users.filter((item) => isEmployeeRole(item.role)).map((item) => item._id);
+  return usersWithLeadAccess(users);
 };
 
 const getVisibleAssigneeIds = async (user) => {
@@ -129,7 +123,8 @@ const findUnifiedLeadForUser = async (type, id, user, populate = false) => {
   const Model = getLeadModel(type);
   if (!Model) return null;
 
-  const query = { _id: id, ...buildLeadVisibilityQuery(user) };
+  const visibility = await resolveLeadVisibility(user);
+  const query = { _id: id, ...visibility.query };
 
   let dbQuery = Model.findOne(query);
   if (populate) {
@@ -137,6 +132,9 @@ const findUnifiedLeadForUser = async (type, id, user, populate = false) => {
       .populate('createdBy', 'name role email')
       .populate('assignedTo', 'name role email')
       .populate('comments.createdBy', 'name');
+    if (Model === Company) {
+      dbQuery = dbQuery.populate('statusDetails.savedBy', 'name');
+    }
   }
 
   return dbQuery;
@@ -180,7 +178,7 @@ const analyzeTranscript = (transcriptText = '') => {
 // @access  Private
 export const getLeads = async (req, res, next) => {
   try {
-    const query = buildLeadVisibilityQuery(req.user);
+    const { query } = await resolveLeadVisibility(req.user);
 
     const leads = await Lead.find(query)
       .populate('createdBy', 'name role email')
@@ -223,7 +221,7 @@ export const getLeadStats = async (req, res, next) => {
 // @access  Private
 export const getAllCombinedLeads = async (req, res, next) => {
   try {
-    const query = buildLeadVisibilityQuery(req.user);
+    const { query } = await resolveLeadVisibility(req.user);
 
     const [customers, companies] = await Promise.all([
       Customer.find(query).populate('createdBy', 'name').populate('assignedTo', 'name').sort({ createdAt: -1 }).lean(),
@@ -276,7 +274,7 @@ export const getAllCombinedLeads = async (req, res, next) => {
 export const getAllCombinedLeadsPaged = async (req, res, next) => {
   try {
     const { page, limit, skip, search } = parsePagination(req.query);
-    const visibility = buildLeadVisibilityQuery(req.user);
+    const { query: visibility } = await resolveLeadVisibility(req.user);
     const customerMatch = { ...visibility };
     const companyMatch = { ...visibility };
     const status = req.query.status;
@@ -477,7 +475,24 @@ export const getUnifiedLead = async (req, res, next) => {
 
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
-    return successResponse(res, 200, 'Lead fetched', lead);
+    const [statusHistory, messages] = await Promise.all([
+      LeadStatusHistory.find({ lead: id, leadModel: type })
+        .populate('changedBy', 'name')
+        .sort({ changedAt: -1 })
+        .limit(200)
+        .lean(),
+      LeadMessage.find({ lead: id, leadModel: type })
+        .populate('createdBy', 'name email')
+        .sort({ createdAt: -1 })
+        .limit(200)
+        .lean(),
+    ]);
+
+    return successResponse(res, 200, 'Lead fetched', {
+      ...lead.toObject(),
+      statusHistory,
+      messages,
+    });
   } catch (error) {
     next(error);
   }
@@ -489,7 +504,7 @@ export const getUnifiedLead = async (req, res, next) => {
 export const updateLeadStatus = async (req, res, next) => {
   try {
     const { type, id } = req.params;
-    const { status, scheduledDateTime, statusDate, details } = req.body;
+    const { status, scheduledDateTime, statusDate, details, comment } = req.body;
     const newStatus = normalizeStatus(status);
     const Model = getLeadModel(type);
     if (!Model || !newStatus) return errorResponse(res, 400, 'Invalid lead type or status');
@@ -506,13 +521,22 @@ export const updateLeadStatus = async (req, res, next) => {
 
     const statusField = getLeadStatusField(type);
     const oldStatus = existingLead[statusField];
+    const cleanedComment = typeof comment === 'string' ? comment.trim() : '';
+    if ((oldStatus !== newStatus || details !== undefined) && !cleanedComment) {
+      return errorResponse(res, 400, 'Please write comment');
+    }
+    if (cleanedComment.length > 4000) {
+      return errorResponse(res, 400, 'Comment is too long');
+    }
     const update = { [statusField]: newStatus };
+    let parsedStatusDetails;
     if (oldStatus !== newStatus) update.leadStatusChangedAt = statusChangedAt;
     if (scheduledDateTime) update.scheduledDateTime = scheduledDateTime;
     if (newStatus === 'Demo Scheduled' && scheduledDateTime) update.followTypeDate = scheduledDateTime;
     if (Model === Company && details !== undefined) {
       try {
         const parsedDetails = parseStatusDetails(newStatus, details);
+        parsedStatusDetails = parsedDetails;
         update.statusDetails = {
           ...parsedDetails,
           savedBy: req.user._id,
@@ -557,6 +581,9 @@ export const updateLeadStatus = async (req, res, next) => {
         newStatus,
         changedBy: req.user._id,
         changedAt: statusChangedAt,
+        entryType: 'status_change',
+        details: parsedStatusDetails || null,
+        comment: cleanedComment,
       });
 
       await logActivity({
@@ -566,6 +593,18 @@ export const updateLeadStatus = async (req, res, next) => {
         entityType: type,
         entityId: lead._id,
         metadata: { oldStatus, newStatus, statusDate: statusChangedAt.toISOString() },
+      });
+    } else if (parsedStatusDetails || cleanedComment) {
+      await LeadStatusHistory.create({
+        lead: lead._id,
+        leadModel: type,
+        oldStatus,
+        newStatus,
+        changedBy: req.user._id,
+        changedAt: update.statusDetails?.savedAt || new Date(),
+        entryType: 'details_saved',
+        details: parsedStatusDetails || { status: newStatus, note: cleanedComment },
+        comment: cleanedComment || null,
       });
     }
 
@@ -635,6 +674,9 @@ export const addLeadComment = async (req, res, next) => {
   try {
     const { type, id } = req.params;
     const { text } = req.body;
+    const cleanedText = typeof text === 'string' ? text.trim() : '';
+    if (!cleanedText) return errorResponse(res, 400, 'Comment text is required');
+    if (cleanedText.length > 4000) return errorResponse(res, 400, 'Comment text is too long');
     
     let attachment;
     if (req.file) {
@@ -645,14 +687,20 @@ export const addLeadComment = async (req, res, next) => {
       };
     }
     
-    const comment = { text, createdBy: req.user._id, createdAt: new Date() };
-    if (attachment) {
-      comment.attachment = attachment;
-    }
-
     const Model = getLeadModel(type);
     const existingLead = await findUnifiedLeadForUser(type, id, req.user);
     if (!Model || !existingLead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    const statusField = getLeadStatusField(type);
+    const comment = {
+      text: cleanedText,
+      status: existingLead[statusField],
+      createdBy: req.user._id,
+      createdAt: new Date(),
+    };
+    if (attachment) {
+      comment.attachment = attachment;
+    }
 
     const lead = await Model.findByIdAndUpdate(id, { $push: { comments: comment } }, { new: true }).populate('comments.createdBy', 'name');
 

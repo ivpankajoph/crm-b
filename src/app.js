@@ -30,7 +30,15 @@ import attendanceRoutes from './routes/attendanceRoutes.js';
 import telephonyRoutes from './routes/telephonyRoutes.js';
 import whatsappRoutes from './routes/whatsappRoutes.js';
 import followUpRoutes from './routes/followUpRoutes.js';
+import teamRoutes from './routes/teamRoutes.js';
+import templateAccessRoutes from './routes/templateAccessRoutes.js';
+import auditLogRoutes from './routes/auditLogRoutes.js';
 import emailMarketingRouter from './modules/email-marketing/index.js';
+import {
+  resolveEffectiveAccess,
+  userHasPermission,
+} from './services/accessControlService.js';
+import { PERMISSIONS } from './constants/permissions.js';
 
 dotenv.config();
 
@@ -53,11 +61,94 @@ const envEnabled = (name, fallback = true) => {
 
 const bridgeCrmUserToWhatsApp = (req, res, next) => {
   if (req.path.startsWith('/webhook/whatsapp')) return next();
-  return protect(req, res, () => {
-    const crmUser = req.user;
+  return protect(req, res, async () => {
+    try {
+      const crmUser = req.user;
+      const access = await resolveEffectiveAccess(crmUser);
+    if (!userHasPermission(access, PERMISSIONS.WHATSAPP_MODULE_VIEW)) {
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have permission to open WhatsApp Marketing',
+      });
+    }
+
+    const modulePath = req.path.toLowerCase();
+    const method = req.method.toUpperCase();
+    let requiredPermissions = [];
+    if (modulePath.startsWith('/templates')) {
+      requiredPermissions = method === 'GET'
+        ? [
+            PERMISSIONS.WHATSAPP_TEMPLATES_USE,
+            PERMISSIONS.WHATSAPP_TEMPLATES_CREATE,
+            PERMISSIONS.WHATSAPP_TEMPLATES_EDIT,
+          ]
+        : [
+            method === 'POST'
+              ? PERMISSIONS.WHATSAPP_TEMPLATES_CREATE
+              : PERMISSIONS.WHATSAPP_TEMPLATES_EDIT,
+          ];
+    } else if (
+      modulePath.startsWith('/broadcast')
+      || modulePath.startsWith('/drip-campaigns')
+      || modulePath.startsWith('/automation')
+    ) {
+      requiredPermissions = [PERMISSIONS.WHATSAPP_CAMPAIGNS_MANAGE];
+    } else if (modulePath.startsWith('/whatsapp/send-template')) {
+      requiredPermissions = [
+        PERMISSIONS.WHATSAPP_TEMPLATES_USE,
+        PERMISSIONS.WHATSAPP_SEND_LEAD,
+      ];
+    } else if (modulePath.startsWith('/inbox/send')) {
+      requiredPermissions = [PERMISSIONS.WHATSAPP_SEND_LEAD];
+    }
+
+    const adminOnlyModulePaths = [
+      '/credentials',
+      '/users',
+      '/agents',
+      '/integrations',
+      '/facebook',
+      '/map-agent',
+    ];
+    if (!access.isAdmin && adminOnlyModulePaths.some((prefix) => modulePath.startsWith(prefix))) {
+      return res.status(403).json({
+        success: false,
+        message: 'This WhatsApp administration feature is restricted',
+      });
+    }
+    if (
+      requiredPermissions.length
+      && (
+        modulePath.startsWith('/whatsapp/send-template')
+          ? !requiredPermissions.every((permission) => userHasPermission(access, permission))
+          : !requiredPermissions.some((permission) => userHasPermission(access, permission))
+      )
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: 'You do not have permission to perform this WhatsApp action',
+      });
+    }
+
     const normalizedRole = ['admin', 'superadmin', 'super_admin'].includes(
       String(crmUser?.role || '').toLowerCase()
     ) ? 'admin' : 'user';
+    const pageAccess = new Set();
+    if (!access.isAdmin) {
+      if (access.grants.includes(PERMISSIONS.WHATSAPP_MODULE_VIEW)) pageAccess.add('dashboard');
+      if (
+        access.grants.includes(PERMISSIONS.WHATSAPP_TEMPLATES_CREATE)
+        || access.grants.includes(PERMISSIONS.WHATSAPP_TEMPLATES_EDIT)
+      ) pageAccess.add('templates');
+      if (access.grants.includes(PERMISSIONS.WHATSAPP_CAMPAIGNS_MANAGE)) pageAccess.add('broadcast');
+      if (
+        access.grants.includes(PERMISSIONS.WHATSAPP_TEMPLATES_USE)
+        || access.grants.includes(PERMISSIONS.WHATSAPP_SEND_LEAD)
+      ) pageAccess.add('inbox');
+      access.permissions
+        .filter((permission) => !String(permission).startsWith('/'))
+        .forEach((permission) => pageAccess.add(permission));
+    }
     const whatsappUser = {
       id: `crm:${crmUser._id}`,
       accountId: String(crmUser._id),
@@ -65,13 +156,16 @@ const bridgeCrmUserToWhatsApp = (req, res, next) => {
       name: crmUser.name || 'CRM User',
       email: crmUser.email || '',
       role: normalizedRole,
-      pageAccess: crmUser.permissions || [],
+      pageAccess: Array.from(pageAccess),
     };
     req.headers['x-user-id'] = whatsappUser.id;
     req.headers['x-user-role'] = whatsappUser.role;
     req.headers['x-user-name'] = whatsappUser.name;
     req.headers['x-user'] = JSON.stringify(whatsappUser);
-    next();
+      next();
+    } catch (error) {
+      next(error);
+    }
   });
 };
 
@@ -165,6 +259,9 @@ app.use('/api/attendance', attendanceRoutes);
 app.use('/api/telephony', telephonyRoutes);
 app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/follow-ups', followUpRoutes);
+app.use('/api/teams', teamRoutes);
+app.use('/api/template-access', templateAccessRoutes);
+app.use('/api/audit-logs', auditLogRoutes);
 app.use('/api/email-marketing', emailMarketingRouter);
 app.use('/api/whatsapp-marketing', bridgeCrmUserToWhatsApp, whatsappMarketingRouter);
 

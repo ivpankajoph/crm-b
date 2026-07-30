@@ -10,9 +10,41 @@ import {
   getUserReportData,
 } from '../services/reportQueryService.js';
 import { streamCsv } from '../utils/csvStream.js';
+import mongoose from 'mongoose';
+import { resolveUserDataScope } from '../services/dataScopeService.js';
+
+const scopedReportQuery = async (req) => {
+  const visibility = await resolveUserDataScope(req.user, 'reports', req.access);
+  if (visibility.scope === 'all') return { ...req.query, _visibleUserIds: undefined };
+  return {
+    ...req.query,
+    _visibleUserIds: visibility.userIds
+      .filter((id) => mongoose.isValidObjectId(id))
+      .map((id) => new mongoose.Types.ObjectId(id)),
+  };
+};
+
+const leadOwnershipFilter = (visibleUserIds) => (
+  Array.isArray(visibleUserIds)
+    ? {
+        $or: [
+          { createdBy: { $in: visibleUserIds } },
+          { assignedTo: { $in: visibleUserIds } },
+        ],
+      }
+    : {}
+);
+
+const creatorFilter = (visibleUserIds) => (
+  Array.isArray(visibleUserIds) ? { createdBy: { $in: visibleUserIds } } : {}
+);
 
 export const getDashboardReport = async (req, res) => {
   try {
+    const scopedQuery = await scopedReportQuery(req);
+    const visibleUserIds = scopedQuery._visibleUserIds;
+    const leadFilter = leadOwnershipFilter(visibleUserIds);
+    const activityFilter = creatorFilter(visibleUserIds);
     const [
       totalCustomers,
       totalCompanies,
@@ -21,22 +53,22 @@ export const getDashboardReport = async (req, res) => {
       recentCompanies,
       recentMeetings,
     ] = await Promise.all([
-      Customer.countDocuments(),
-      Company.countDocuments(),
-      Event.countDocuments({ type: 'Meeting' }),
-      Customer.find()
+      Customer.countDocuments(leadFilter),
+      Company.countDocuments(leadFilter),
+      Event.countDocuments({ type: 'Meeting', ...activityFilter }),
+      Customer.find(leadFilter)
         .select('name createdAt createdBy')
         .sort({ createdAt: -1 })
         .limit(5)
         .populate('createdBy', 'name')
         .lean(),
-      Company.find()
+      Company.find(leadFilter)
         .select('companyName createdAt createdBy')
         .sort({ createdAt: -1 })
         .limit(5)
         .populate('createdBy', 'name')
         .lean(),
-      Event.find({ type: 'Meeting' })
+      Event.find({ type: 'Meeting', ...activityFilter })
         .select('title createdAt createdBy')
         .sort({ createdAt: -1 })
         .limit(5)
@@ -84,7 +116,7 @@ export const getDashboardReport = async (req, res) => {
 
 export const getSalesReport = async (req, res) => {
   try {
-    res.json({ success: true, data: await getSalesReportData(req.query) });
+    res.json({ success: true, data: await getSalesReportData(await scopedReportQuery(req)) });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -92,7 +124,7 @@ export const getSalesReport = async (req, res) => {
 
 export const getMarketingReport = async (req, res) => {
   try {
-    res.json({ success: true, data: await getMarketingReportData(req.query) });
+    res.json({ success: true, data: await getMarketingReportData(await scopedReportQuery(req)) });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -100,7 +132,7 @@ export const getMarketingReport = async (req, res) => {
 
 export const getUserReport = async (req, res) => {
   try {
-    res.json({ success: true, data: await getUserReportData(req.query) });
+    res.json({ success: true, data: await getUserReportData(await scopedReportQuery(req)) });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -108,7 +140,7 @@ export const getUserReport = async (req, res) => {
 
 export const getMeetingReport = async (req, res) => {
   try {
-    res.json({ success: true, data: await getMeetingReportData(req.query) });
+    res.json({ success: true, data: await getMeetingReportData(await scopedReportQuery(req)) });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -121,8 +153,13 @@ const handleExportError = (res, error) => {
 
 export const exportSalesReport = async (req, res) => {
   try {
+    const query = await scopedReportQuery(req);
     const rows = Customer.aggregate([
-      ...buildSalesReportPipeline(req.query),
+      ...buildSalesReportPipeline({
+        period: query.period,
+        status: query.status,
+        visibleUserIds: query._visibleUserIds,
+      }),
       { $sort: { createdAt: -1, id: -1 } },
     ]).cursor({ batchSize: 250 });
     await streamCsv({
@@ -145,8 +182,12 @@ export const exportSalesReport = async (req, res) => {
 
 export const exportMarketingReport = async (req, res) => {
   try {
+    const query = await scopedReportQuery(req);
     const rows = Customer.aggregate([
-      ...buildMarketingReportPipeline(req.query),
+      ...buildMarketingReportPipeline({
+        period: query.period,
+        visibleUserIds: query._visibleUserIds,
+      }),
       { $sort: { dateAcquired: -1, id: -1 } },
     ]).cursor({ batchSize: 250 });
     await streamCsv({
@@ -168,7 +209,7 @@ export const exportMarketingReport = async (req, res) => {
 
 export const exportUserReport = async (req, res) => {
   try {
-    const rows = await getUserReportData({ period: req.query.period });
+    const rows = await getUserReportData(await scopedReportQuery(req));
     await streamCsv({
       res,
       filename: 'user-report.csv',
@@ -189,7 +230,7 @@ export const exportUserReport = async (req, res) => {
 
 export const exportMeetingReport = async (req, res) => {
   try {
-    const rows = await getMeetingReportData({ period: req.query.period, status: req.query.status });
+    const rows = await getMeetingReportData(await scopedReportQuery(req));
     await streamCsv({
       res,
       filename: 'meeting-report.csv',

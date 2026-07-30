@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import { errorResponse } from '../utils/response.js';
+import { isAdminUser } from '../utils/hierarchy.js';
 
 export const protect = async (req, res, next) => {
   let token;
@@ -25,7 +26,7 @@ export const protect = async (req, res, next) => {
 };
 
 export const adminOnly = (req, res, next) => {
-  if (req.user && req.user.role === 'admin') {
+  if (req.user && isAdminUser(req.user)) {
     next();
   } else {
     return errorResponse(res, 403, 'Not authorized as admin');

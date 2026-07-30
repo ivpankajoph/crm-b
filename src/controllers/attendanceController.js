@@ -2,6 +2,7 @@ import Attendance from '../models/Attendance.js';
 import User from '../models/User.js';
 import Notification from '../models/Notification.js';
 import { successResponse, errorResponse } from '../utils/response.js';
+import { resolveUserDataScope } from '../services/dataScopeService.js';
 
 // @desc    Mark attendance for a user (Admin only)
 // @route   POST /api/attendance
@@ -247,8 +248,12 @@ export const getUserAttendanceHistory = async (req, res, next) => {
 export const getAttendanceReport = async (req, res, next) => {
   try {
     const { startDate, endDate, userId } = req.query;
-    
-    let query = {};
+    const visibility = await resolveUserDataScope(req.user, 'reports', req.access);
+    let query = visibility.scope === 'all'
+      ? {}
+      : visibility.scope === 'none'
+        ? { _id: { $exists: false } }
+        : { user: { $in: visibility.userIds } };
 
     if (startDate && endDate) {
       query.date = { 
@@ -257,7 +262,13 @@ export const getAttendanceReport = async (req, res, next) => {
       };
     }
 
-    if (userId) {
+    if (userId && visibility.scope !== 'none') {
+      if (
+        visibility.scope !== 'all'
+        && !visibility.userIds.map(String).includes(String(userId))
+      ) {
+        return errorResponse(res, 403, 'This employee is outside your report access');
+      }
       query.user = userId;
     }
 
