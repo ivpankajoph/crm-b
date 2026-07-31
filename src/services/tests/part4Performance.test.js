@@ -113,7 +113,9 @@ test('Part 4 model indexes are declared without removing prior indexes', () => {
   const hasIndex = (Model, expected) => Model.schema.indexes()
     .some(([key]) => JSON.stringify(key) === JSON.stringify(expected));
   assert.ok(hasIndex(Company, { createdBy: 1, createdAt: -1 }));
+  assert.ok(hasIndex(Company, { assignedTo: 1, leadStatus: 1, createdAt: -1 }));
   assert.ok(hasIndex(Customer, { leadStatus: 1, createdAt: 1 }));
+  assert.ok(hasIndex(Customer, { assignedTo: 1, leadStatus: 1, createdAt: -1 }));
   assert.ok(hasIndex(Event, { type: 1, status: 1, createdAt: -1 }));
   assert.ok(hasIndex(Task, { createdBy: 1, status: 1, dueDate: 1 }));
   assert.ok(hasIndex(Message, { sender: 1, recipient: 1, createdAt: -1 }));

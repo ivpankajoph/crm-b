@@ -11,38 +11,53 @@ import {
   expandImpliedPermissions,
 } from '../constants/permissions.js';
 import { logActivity } from '../utils/activity.js';
+import {
+  cacheKeys,
+  getReferenceCacheVersion,
+  invalidateAccessCaches,
+  invalidateRoleReferenceCaches,
+  withJsonCache,
+} from '../services/cacheService.js';
 
 const sanitizeGrants = (grants) => expandImpliedPermissions(
   normalizePermissionList(grants).filter((grant) => PERMISSION_VALUES.includes(grant)),
 ).filter((grant) => PERMISSION_VALUES.includes(grant));
 
-export const getPermissionCatalog = async (req, res) => successResponse(
-  res,
-  200,
-  'Permission catalog fetched successfully',
-  { groups: PERMISSION_GROUPS, dataScopes: DATA_SCOPES, version: 2 },
-);
+export const getPermissionCatalog = async (req, res) => {
+  const version = await getReferenceCacheVersion();
+  const { value } = await withJsonCache(
+    { key: cacheKeys.roleCatalog(version), ttlSeconds: 300 },
+    async () => ({ groups: PERMISSION_GROUPS, dataScopes: DATA_SCOPES, version: 2 }),
+  );
+  return successResponse(res, 200, 'Permission catalog fetched successfully', value);
+};
 
 // @desc    Get all roles
 // @route   GET /api/roles
 // @access  Private
 export const getRoles = async (req, res, next) => {
   try {
-    const roles = await Role.find().populate('createdBy', 'name email');
-    const roleCounts = await User.aggregate([
-      { $group: { _id: '$role', count: { $sum: 1 } } },
-    ]);
-    const countByRole = new Map(roleCounts.map(({ _id, count }) => [_id, count]));
-    const rolesWithAccurateCounts = roles.map((role) => ({
-      ...role.toObject(),
-      usersCount: countByRole.get(role.name) || 0,
-      effectiveGrants: expandImpliedPermissions(normalizePermissionList([
-        ...(role.grants || []),
-        ...(Number(role.permissionVersion || 1) < 2
-          ? legacyPermissionsToGrants(role.permissions || [])
-          : []),
-      ])),
-    }));
+    const version = await getReferenceCacheVersion();
+    const { value: rolesWithAccurateCounts } = await withJsonCache(
+      { key: cacheKeys.roles(version), ttlSeconds: 300 },
+      async () => {
+        const [roles, roleCounts] = await Promise.all([
+          Role.find().populate('createdBy', 'name email').lean(),
+          User.aggregate([{ $group: { _id: '$role', count: { $sum: 1 } } }]),
+        ]);
+        const countByRole = new Map(roleCounts.map(({ _id, count }) => [_id, count]));
+        return roles.map((role) => ({
+          ...role,
+          usersCount: countByRole.get(role.name) || 0,
+          effectiveGrants: expandImpliedPermissions(normalizePermissionList([
+            ...(role.grants || []),
+            ...(Number(role.permissionVersion || 1) < 2
+              ? legacyPermissionsToGrants(role.permissions || [])
+              : []),
+          ])),
+        }));
+      },
+    );
 
     return successResponse(res, 200, 'Roles fetched successfully', rolesWithAccurateCounts);
   } catch (error) {
@@ -83,6 +98,7 @@ export const createRole = async (req, res, next) => {
       entityId: role._id,
       metadata: { grants: role.grants, dataScopes: role.dataScopes },
     });
+    await Promise.all([invalidateRoleReferenceCaches(), invalidateAccessCaches()]);
 
     return successResponse(res, 201, 'Role created successfully', populatedRole);
   } catch (error) {
@@ -115,6 +131,7 @@ export const updateRole = async (req, res, next) => {
       entityId: role._id,
       metadata: { level: role.level, status: role.status },
     });
+    await Promise.all([invalidateRoleReferenceCaches(), invalidateAccessCaches()]);
 
     return successResponse(res, 200, 'Role updated successfully', role);
   } catch (error) {
@@ -140,6 +157,7 @@ export const updateRoleAccess = async (req, res, next) => {
       entityId: role._id,
       metadata: { grants: role.grants, dataScopes: role.dataScopes },
     });
+    await Promise.all([invalidateRoleReferenceCaches(), invalidateAccessCaches()]);
 
     return successResponse(res, 200, 'Role access updated successfully', role);
   } catch (error) {
@@ -177,6 +195,7 @@ export const deleteRole = async (req, res, next) => {
     // }
 
     await Role.findByIdAndDelete(req.params.id);
+    await Promise.all([invalidateRoleReferenceCaches(), invalidateAccessCaches()]);
 
     return successResponse(res, 200, 'Role deleted successfully', null);
   } catch (error) {
@@ -197,6 +216,7 @@ export const updateRolePermissions = async (req, res, next) => {
 
     role.permissions = normalizePermissionList(permissions);
     await role.save();
+    await Promise.all([invalidateRoleReferenceCaches(), invalidateAccessCaches()]);
 
     return successResponse(res, 200, 'Permissions updated successfully', role);
   } catch (error) {

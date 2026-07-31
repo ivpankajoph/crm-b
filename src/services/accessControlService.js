@@ -9,6 +9,14 @@ import {
   IMPLIED_PERMISSIONS,
 } from '../constants/permissions.js';
 import { isAdminUser } from '../utils/hierarchy.js';
+import {
+  cacheKeys,
+  getAccessCacheVersion,
+  getCachedJson,
+  getCachedJsonMany,
+  setCachedJson,
+  setCachedJsonMany,
+} from './cacheService.js';
 
 const DEFAULT_SCOPES = Object.freeze({
   leads: 'own',
@@ -49,7 +57,7 @@ export const resolveAccountOwnerId = async (user) => {
   return user._id;
 };
 
-export const resolveEffectiveAccess = async (user) => {
+const calculateEffectiveAccessWithRole = (user, role = null) => {
   if (!user) {
     return {
       isAdmin: false,
@@ -76,7 +84,6 @@ export const resolveEffectiveAccess = async (user) => {
     };
   }
 
-  const role = await getRoleForUser(user);
   const legacyPermissions = normalizePermissionList(role?.permissions);
   const accessVersion = Number(role?.permissionVersion || 1);
   const baseGrants = normalizePermissionList([
@@ -106,6 +113,76 @@ export const resolveEffectiveAccess = async (user) => {
     roleId: role?._id ? String(role._id) : null,
     accessVersion,
   };
+};
+
+const calculateEffectiveAccess = async (user) => (
+  calculateEffectiveAccessWithRole(user, await getRoleForUser(user))
+);
+
+export const resolveEffectiveAccess = async (user) => {
+  if (!user?._id) return calculateEffectiveAccess(user);
+  const version = await getAccessCacheVersion();
+  const key = cacheKeys.access(version, String(user._id));
+  const cached = await getCachedJson(key);
+  if (cached) return cached;
+  const access = await calculateEffectiveAccess(user);
+  await setCachedJson(key, access, 120);
+  return access;
+};
+
+// Resolve access for a collection without issuing one Role query per user.
+export const resolveEffectiveAccessMany = async (users = []) => {
+  if (!users.length) return [];
+
+  const version = await getAccessCacheVersion();
+  const keys = users.map((user) => (
+    user?._id ? cacheKeys.access(version, String(user._id)) : null
+  ));
+  const cachedValues = await getCachedJsonMany(keys.filter(Boolean));
+  let cachedIndex = 0;
+  const cacheEntries = keys.map((key) => ({
+    key,
+    value: key ? cachedValues[cachedIndex++] : null,
+  }));
+
+  const missingIndexes = cacheEntries
+    .map((entry, index) => (entry.value ? -1 : index))
+    .filter((index) => index >= 0);
+  if (!missingIndexes.length) return cacheEntries.map((entry) => entry.value);
+
+  const roleIds = [];
+  const roleNames = [];
+  missingIndexes.forEach((index) => {
+    const user = users[index];
+    if (!user || isAdminUser(user)) return;
+    if (user.roleRef) roleIds.push(user.roleRef);
+    if (user.role) roleNames.push(user.role);
+  });
+
+  const roleFilter = [];
+  if (roleIds.length) roleFilter.push({ _id: { $in: roleIds } });
+  if (roleNames.length) roleFilter.push({ name: { $in: roleNames } });
+  const roles = roleFilter.length
+    ? await Role.find({ $or: roleFilter }).lean()
+    : [];
+  const rolesById = new Map(roles.map((role) => [String(role._id), role]));
+  const rolesByName = new Map(roles.map((role) => [role.name, role]));
+
+  const cacheWrites = [];
+  missingIndexes.forEach((index) => {
+    const user = users[index];
+    const role = user?.roleRef
+      ? rolesById.get(String(user.roleRef)) || rolesByName.get(user.role)
+      : rolesByName.get(user?.role);
+    const access = calculateEffectiveAccessWithRole(user, role);
+    cacheEntries[index].value = access;
+    if (cacheEntries[index].key) {
+      cacheWrites.push({ key: cacheEntries[index].key, value: access });
+    }
+  });
+  await setCachedJsonMany(cacheWrites, 120);
+
+  return cacheEntries.map((entry) => entry.value);
 };
 
 export const userHasPermission = (access, requiredPermission) => {

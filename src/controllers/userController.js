@@ -12,6 +12,14 @@ import {
   sanitizeDataScopes,
 } from '../constants/permissions.js';
 import { resolveUserDataScope } from '../services/dataScopeService.js';
+import {
+  cacheKeys,
+  getReferenceCacheVersion,
+  invalidateAccessCaches,
+  invalidateAuthenticatedUserCache,
+  invalidateUserReferenceCaches,
+  withJsonCache,
+} from '../services/cacheService.js';
 
 const sanitizeOverrides = (overrides = {}) => ({
   allow: normalizePermissionList(overrides.allow)
@@ -78,7 +86,8 @@ export const getUsers = async (req, res, next) => {
       .populate('roleRef', 'name level status')
       .populate('teams', 'name status')
       .populate('createdBy', 'name role email')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
     return successResponse(res, 200, 'Users fetched successfully', users);
   } catch (error) {
     next(error);
@@ -148,10 +157,23 @@ export const getUserOptions = async (req, res, next) => {
         filter.$or = textFilter;
       }
     }
-    const users = await User.find(filter)
-      .select('name email phone role parent status isActive')
-      .sort({ name: 1 })
-      .lean();
+    let users;
+    if (!search) {
+      const version = await getReferenceCacheVersion();
+      const cached = await withJsonCache(
+        { key: cacheKeys.users(version, req.user._id, purpose), ttlSeconds: 300 },
+        () => User.find(filter)
+          .select('name email phone role parent status isActive')
+          .sort({ name: 1 })
+          .lean(),
+      );
+      users = cached.value;
+    } else {
+      users = await User.find(filter)
+        .select('name email phone role parent status isActive')
+        .sort({ name: 1 })
+        .lean();
+    }
     return successResponse(res, 200, 'User options fetched successfully', users);
   } catch (error) {
     next(error);
@@ -231,6 +253,7 @@ export const createUser = async (req, res, next) => {
       entityId: user._id,
       metadata: { role: user.role, parent: user.parent },
     });
+    await Promise.all([invalidateUserReferenceCaches(), invalidateAccessCaches()]);
 
     const userObj = user.toJSON(); // toJSON removes password
 
@@ -338,6 +361,11 @@ export const updateUser = async (req, res, next) => {
       entityId: user._id,
       metadata: { oldRole, newRole: user.role, parent: user.parent, status: user.status },
     });
+    await Promise.all([
+      invalidateUserReferenceCaches(),
+      invalidateAccessCaches(),
+      invalidateAuthenticatedUserCache(user._id),
+    ]);
 
     const userObj = user.toJSON();
 
@@ -369,6 +397,11 @@ export const deleteUser = async (req, res, next) => {
     ]);
 
     await User.findByIdAndDelete(req.params.id);
+    await Promise.all([
+      invalidateUserReferenceCaches(),
+      invalidateAccessCaches(),
+      invalidateAuthenticatedUserCache(req.params.id),
+    ]);
 
     return successResponse(res, 200, 'User deleted successfully', null);
   } catch (error) {

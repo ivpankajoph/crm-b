@@ -279,18 +279,26 @@ const syncActiveCallFromPlivo = async (call) => {
 
 const reconcileStaleCallStatuses = async () => {
   const active = { status: { $in: ['queued', 'ringing'] } };
-  await CallLog.updateMany(
-    { ...active, endedAt: { $ne: null }, recordingStatus: { $ne: 'ready' }, answeredAt: null },
-    { $set: { status: 'failed' } },
-  );
-  await CallLog.updateMany(
-    { ...active, $or: [{ recordingStatus: 'ready' }, { answeredAt: { $ne: null } }, { transcriptionStatus: 'completed' }] },
-    { $set: { status: 'completed', hangupCause: 'Completed' } },
-  );
-  await CallLog.updateMany(
-    { ...active, callDatetime: { $lt: new Date(Date.now() - (10 * 60 * 1000)) }, recordingStatus: { $ne: 'ready' } },
-    { $set: { status: 'failed', hangupCause: 'Call did not complete', endedAt: new Date() } },
-  );
+  await CallLog.bulkWrite([
+    {
+      updateMany: {
+        filter: { ...active, endedAt: { $ne: null }, recordingStatus: { $ne: 'ready' }, answeredAt: null },
+        update: { $set: { status: 'failed' } },
+      },
+    },
+    {
+      updateMany: {
+        filter: { ...active, $or: [{ recordingStatus: 'ready' }, { answeredAt: { $ne: null } }, { transcriptionStatus: 'completed' }] },
+        update: { $set: { status: 'completed', hangupCause: 'Completed' } },
+      },
+    },
+    {
+      updateMany: {
+        filter: { ...active, callDatetime: { $lt: new Date(Date.now() - (10 * 60 * 1000)) }, recordingStatus: { $ne: 'ready' } },
+        update: { $set: { status: 'failed', hangupCause: 'Call did not complete', endedAt: new Date() } },
+      },
+    },
+  ], { ordered: true });
 };
 
 export const listCallLogs = async (req, res, next) => {
@@ -301,7 +309,14 @@ export const listCallLogs = async (req, res, next) => {
     const filter = await callAccessFilter(req.user, req.access);
     if (req.query.status && req.query.status !== 'all') filter.status = req.query.status;
     const [calls, total] = await Promise.all([
-      CallLog.find(filter).populate('lead').populate('calledBy', 'name email role').sort({ callDatetime: -1 }).skip((page - 1) * limit).limit(limit),
+      CallLog.find(filter)
+        .select('lead leadModel calledBy callDatetime durationSeconds fromNumber toNumber status recordingStatus transcriptionStatus hangupCause')
+        .populate('lead', 'name companyName customerName')
+        .populate('calledBy', 'name email role')
+        .sort({ callDatetime: -1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
       CallLog.countDocuments(filter),
     ]);
     return successResponse(res, 200, 'Call history fetched', { calls, page, limit, total, pages: Math.ceil(total / limit) });

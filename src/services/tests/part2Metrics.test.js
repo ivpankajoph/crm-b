@@ -6,7 +6,12 @@ import Company from '../../models/Company.js';
 import LeadStatusHistory from '../../models/LeadStatusHistory.js';
 import { calculateDashboardMetricsAggregated } from '../dashboardMetricsService.js';
 import { buildLeadStatsMatch, calculateLeadStatsAggregated } from '../leadStatsService.js';
-import { withSafeCache } from '../cacheService.js';
+import {
+  getCacheMetrics,
+  getCachedJsonMany,
+  setCachedJsonMany,
+  withSafeCache,
+} from '../cacheService.js';
 
 const admin = {
   _id: new mongoose.Types.ObjectId(),
@@ -152,4 +157,30 @@ test('concurrent identical uncached requests share one producer', async () => {
   ]);
   assert.equal(calls, 1);
   assert.deepEqual(first.value, second.value);
+});
+
+test('local cache serves repeated metric reads and batched reference reads', async () => {
+  const suffix = `${Date.now()}:${Math.random()}`;
+  const metricKey = `test:part4:metric:${suffix}`;
+  let calls = 0;
+  await withSafeCache({ key: metricKey }, async () => {
+    calls += 1;
+    return { totalLeads: 9 };
+  });
+  const before = getCacheMetrics();
+  const cached = await withSafeCache({ key: metricKey }, async () => {
+    calls += 1;
+    return { totalLeads: 0 };
+  });
+  const after = getCacheMetrics();
+  assert.equal(calls, 1);
+  assert.equal(cached.cacheStatus, 'hit');
+  assert.ok(after.localHits > before.localHits);
+
+  const keys = [`test:part4:a:${suffix}`, `test:part4:b:${suffix}`];
+  await setCachedJsonMany([
+    { key: keys[0], value: { id: 'a' } },
+    { key: keys[1], value: { id: 'b' } },
+  ]);
+  assert.deepEqual(await getCachedJsonMany(keys), [{ id: 'a' }, { id: 'b' }]);
 });

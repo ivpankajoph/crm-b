@@ -1,5 +1,5 @@
 import express from 'express';
-import { getCustomers, getCustomerOptions, createCustomer, getCustomerById, updateCustomer, deleteCustomer, bulkCreateCustomers } from '../controllers/customerController.js';
+import { getCustomers, getCustomersPaged, getCustomerOptions, createCustomer, getCustomerById, updateCustomer, deleteCustomer, bulkCreateCustomers } from '../controllers/customerController.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { requirePermission } from '../middleware/permissionMiddleware.js';
 import { PERMISSIONS } from '../constants/permissions.js';
@@ -7,6 +7,7 @@ import { PERMISSIONS } from '../constants/permissions.js';
 const router = express.Router();
 
 router.post('/bulk', protect, requirePermission(PERMISSIONS.LEADS_CREATE), bulkCreateCustomers);
+router.get('/paged', protect, requirePermission(PERMISSIONS.LEADS_VIEW), getCustomersPaged);
 router.get('/options', protect, requirePermission(PERMISSIONS.LEADS_VIEW), getCustomerOptions);
 
 router.route('/')

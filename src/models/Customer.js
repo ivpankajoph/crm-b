@@ -88,6 +88,11 @@ customerSchema.index({ createdAt: -1, leadStatus: 1 });
 customerSchema.index({ scheduledDateTime: 1 });
 customerSchema.index({ createdBy: 1, createdAt: -1 }, { name: 'customer_createdBy_createdAt' });
 customerSchema.index({ assignedTo: 1, createdAt: -1 }, { name: 'customer_assignedTo_createdAt' });
+customerSchema.index(
+  { assignedTo: 1, leadStatus: 1, createdAt: -1 },
+  { name: 'customer_assignee_status_createdAt' },
+);
+customerSchema.index({ name: 1, createdAt: -1 }, { name: 'customer_name_createdAt' });
 customerSchema.index({ leadStatus: 1, createdAt: 1 }, { name: 'customer_leadStatus_createdAt' });
 
 const Customer = mongoose.model('Customer', customerSchema);

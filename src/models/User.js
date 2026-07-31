@@ -83,6 +83,9 @@ userSchema.index({ teams: 1, status: 1 });
 userSchema.index({ roleRef: 1, status: 1 });
 userSchema.index({ role: 1, status: 1 });
 userSchema.index({ createdAt: -1 });
+userSchema.index({ isActive: 1, name: 1 }, { name: 'user_active_name' });
+userSchema.index({ status: 1, createdAt: -1 }, { name: 'user_status_createdAt' });
+userSchema.index({ role: 1, createdAt: -1 }, { name: 'user_role_createdAt' });
 
 userSchema.pre('validate', function () {
   this.isActive = this.status !== 'inactive';

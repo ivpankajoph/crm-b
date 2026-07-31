@@ -134,14 +134,19 @@ export const getDailyAttendance = async (req, res, next) => {
     targetDate.setHours(0, 0, 0, 0);
 
     // Get all users (except admins maybe? Let's get all active users)
-    const users = await User.find({ isActive: true, role: { $ne: 'admin' } }).select('name email role');
+    const users = await User.find({ isActive: true, role: { $ne: 'admin' } })
+      .select('name email role')
+      .lean();
     
     // Get attendance records for this date
-    const attendanceRecords = await Attendance.find({ date: targetDate });
+    const attendanceRecords = await Attendance.find({ date: targetDate }).lean();
+    const attendanceByUser = new Map(
+      attendanceRecords.map((record) => [String(record.user), record]),
+    );
 
     // Combine them
     const combinedData = users.map(user => {
-      const record = attendanceRecords.find(a => a.user.toString() === user._id.toString());
+      const record = attendanceByUser.get(String(user._id));
       return {
         user,
         attendance: record || null
@@ -201,16 +206,19 @@ export const requestAttendanceChange = async (req, res, next) => {
     await attendance.save();
 
     // Create notifications for all admins
-    const admins = await User.find({ role: 'admin' });
-    const notificationPromises = admins.map(admin => 
-      Notification.create({
-        user: admin._id,
-        title: 'Attendance Change Request',
-        message: `${req.user.name} has requested an attendance change: ${comment}`,
-        type: 'warning'
-      })
-    );
-    await Promise.all(notificationPromises);
+    const adminIds = await User.find({ role: 'admin' }).distinct('_id');
+    if (adminIds.length) {
+      await Notification.bulkWrite(adminIds.map((userId) => ({
+        insertOne: {
+          document: {
+            user: userId,
+            title: 'Attendance Change Request',
+            message: `${req.user.name} has requested an attendance change: ${comment}`,
+            type: 'warning',
+          },
+        },
+      })), { ordered: false });
+    }
 
     return successResponse(res, 200, 'Change request submitted successfully');
   } catch (error) {
