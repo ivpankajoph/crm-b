@@ -142,6 +142,11 @@ companySchema.index({ scheduledDateTime: 1, followTypeDate: 1 });
 companySchema.index({ followUpRequired: 1, followUpDateTime: 1 });
 companySchema.index({ createdBy: 1, createdAt: -1 }, { name: 'company_createdBy_createdAt' });
 companySchema.index({ assignedTo: 1, createdAt: -1 }, { name: 'company_assignedTo_createdAt' });
+companySchema.index(
+  { assignedTo: 1, leadStatus: 1, createdAt: -1 },
+  { name: 'company_assignee_status_createdAt' },
+);
+companySchema.index({ city: 1, createdAt: -1 }, { name: 'company_city_createdAt' });
 companySchema.index({ leadStatus: 1, createdAt: 1 }, { name: 'company_leadStatus_createdAt' });
 
 const Company = mongoose.model('Company', companySchema);

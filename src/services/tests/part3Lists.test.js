@@ -63,6 +63,7 @@ test('date-only upper bounds include the complete final day', () => {
 test('all additive Part 3 routes remain available beside legacy routes', () => {
   assert.ok(routePaths(companyRoutes).includes('/paged'));
   assert.ok(routePaths(companyRoutes).includes('/options'));
+  assert.ok(routePaths(customerRoutes).includes('/paged'));
   assert.ok(routePaths(customerRoutes).includes('/options'));
   assert.ok(routePaths(employeeRoutes).includes('/paged'));
   assert.ok(routePaths(userRoutes).includes('/paged'));

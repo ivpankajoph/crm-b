@@ -99,10 +99,12 @@ const reconcileDueFollowUps = async () => {
     .select('_id nextReminderAt')
     .limit(500)
     .lean();
-  for (const followUp of pending) {
-    if (!scheduledJobs.has(jobId(followUp._id))) {
-      await scheduleFollowUpReminder(followUp._id, followUp.nextReminderAt);
-    }
+  for (let index = 0; index < pending.length; index += 20) {
+    await Promise.all(pending.slice(index, index + 20).map((followUp) => (
+      scheduledJobs.has(jobId(followUp._id))
+        ? Promise.resolve()
+        : scheduleFollowUpReminder(followUp._id, followUp.nextReminderAt)
+    )));
   }
 };
 
@@ -112,8 +114,10 @@ export const startFollowUpReminderRuntime = async () => {
   })
     .select('_id nextReminderAt')
     .lean();
-  for (const followUp of active) {
-    await scheduleFollowUpReminder(followUp._id, followUp.nextReminderAt);
+  for (let index = 0; index < active.length; index += 20) {
+    await Promise.all(active.slice(index, index + 20).map((followUp) => (
+      scheduleFollowUpReminder(followUp._id, followUp.nextReminderAt)
+    )));
   }
   recoveryTimer = setInterval(() => {
     void reconcileDueFollowUps().catch((error) => {

@@ -21,9 +21,10 @@ import { parseFollowUpPayload } from '../utils/followUp.js';
 import { parseStatusDetails } from '../utils/statusDetails.js';
 import { cancelFollowUpReminder } from '../services/followUpReminderService.js';
 import { resolveLeadVisibility } from '../services/leadAccessService.js';
-import { resolveEffectiveAccess, userHasPermission } from '../services/accessControlService.js';
+import { resolveEffectiveAccessMany, userHasPermission } from '../services/accessControlService.js';
 import { PERMISSIONS } from '../constants/permissions.js';
 import LeadMessage from '../models/LeadMessage.js';
+import ActivityLog from '../models/ActivityLog.js';
 
 const STATUS_ALIASES = {
   demo_scheduled: 'Demo Scheduled',
@@ -67,11 +68,10 @@ const ensureAssigneeArray = async (Model, lead) => {
 };
 
 const usersWithLeadAccess = async (users) => {
-  const eligibleIds = await Promise.all(users.map(async (candidate) => {
-    const access = await resolveEffectiveAccess(candidate);
-    return userHasPermission(access, PERMISSIONS.LEADS_VIEW) ? candidate._id : null;
-  }));
-  return eligibleIds.filter(Boolean);
+  const accessRows = await resolveEffectiveAccessMany(users);
+  return users
+    .filter((candidate, index) => userHasPermission(accessRows[index], PERMISSIONS.LEADS_VIEW))
+    .map((candidate) => candidate._id);
 };
 
 const getAssignableUserIds = async (user) => {
@@ -183,7 +183,8 @@ export const getLeads = async (req, res, next) => {
     const leads = await Lead.find(query)
       .populate('createdBy', 'name role email')
       .populate('assignedTo', 'name role email')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
     
     return successResponse(res, 200, 'Leads fetched successfully', leads);
   } catch (error) {
@@ -305,13 +306,7 @@ export const getAllCombinedLeadsPaged = async (req, res, next) => {
       companyMatch.createdAt = { $gte: dateStart };
     }
     const type = req.query.type;
-    if (type === 'Company') customerMatch._id = null;
-    if (type === 'Customer') companyMatch._id = null;
-
-    const result = await Customer.aggregate([
-      { $match: customerMatch },
-      {
-        $project: {
+    const customerProjection = {
           name: '$name',
           email: { $ifNull: ['$email', ''] },
           phone: { $ifNull: ['$phone', ''] },
@@ -322,31 +317,36 @@ export const getAllCombinedLeadsPaged = async (req, res, next) => {
           assignedToIds: { $ifNull: ['$assignedTo', []] },
           commentsCount: { $size: { $ifNull: ['$comments', []] } },
           createdAt: 1,
-        },
-      },
-      {
+    };
+    const companyProjection = {
+      name: '$companyName',
+      email: { $ifNull: ['$email1', ''] },
+      phone: { $ifNull: ['$mobileNo', { $ifNull: ['$phoneNo', ''] }] },
+      type: { $literal: 'Company' },
+      leadStatus: { $ifNull: ['$leadStatus', 'New'] },
+      followTypeDate: { $ifNull: ['$scheduledDateTime', '$followTypeDate'] },
+      createdById: '$createdBy',
+      assignedToIds: { $ifNull: ['$assignedTo', []] },
+      commentsCount: { $size: { $ifNull: ['$comments', []] } },
+      createdAt: 1,
+    };
+
+    const baseModel = type === 'Company' ? Company : Customer;
+    const combinedPipeline = type === 'Company'
+      ? [{ $match: companyMatch }, { $project: companyProjection }]
+      : [{ $match: customerMatch }, { $project: customerProjection }];
+    if (!type || (type !== 'Customer' && type !== 'Company')) {
+      combinedPipeline.push({
         $unionWith: {
           coll: Company.collection.name,
           pipeline: [
             { $match: companyMatch },
-            {
-              $project: {
-                name: '$companyName',
-                email: { $ifNull: ['$email1', ''] },
-                phone: { $ifNull: ['$mobileNo', { $ifNull: ['$phoneNo', ''] }] },
-                type: { $literal: 'Company' },
-                leadStatus: { $ifNull: ['$leadStatus', 'New'] },
-                followTypeDate: { $ifNull: ['$scheduledDateTime', '$followTypeDate'] },
-                createdById: '$createdBy',
-                assignedToIds: { $ifNull: ['$assignedTo', []] },
-                commentsCount: { $size: { $ifNull: ['$comments', []] } },
-                createdAt: 1,
-              },
-            },
+            { $project: companyProjection },
           ],
         },
-      },
-      {
+      });
+    }
+    combinedPipeline.push({
         $facet: {
           items: [
             { $sort: { createdAt: -1, _id: -1 } },
@@ -383,8 +383,9 @@ export const getAllCombinedLeadsPaged = async (req, res, next) => {
           ],
           total: [{ $count: 'count' }],
         },
-      },
-    ]);
+    });
+
+    const result = await baseModel.aggregate(combinedPipeline);
 
     const items = result[0]?.items || [];
     const total = result[0]?.total[0]?.count || 0;
@@ -564,12 +565,20 @@ export const updateLeadStatus = async (req, res, next) => {
       const activeFollowUps = await FollowUp.find({
         lead: lead._id,
         status: { $in: ['Pending', 'Snoozed'] },
-      });
-      for (const followUp of activeFollowUps) {
-        followUp.status = 'Cancelled';
-        followUp.activeKey = undefined;
-        await followUp.save();
-        await cancelFollowUpReminder(followUp._id);
+      }).select('_id').lean();
+      if (activeFollowUps.length) {
+        await FollowUp.bulkWrite(activeFollowUps.map((followUp) => ({
+          updateOne: {
+            filter: { _id: followUp._id },
+            update: {
+              $set: { status: 'Cancelled' },
+              $unset: { activeKey: 1 },
+            },
+          },
+        })), { ordered: false });
+        await Promise.all(activeFollowUps.map((followUp) => (
+          cancelFollowUpReminder(followUp._id)
+        )));
       }
     }
 
@@ -766,50 +775,112 @@ export const bulkAssignLeads = async (req, res, next) => {
       return errorResponse(res, 403, 'You are not allowed to assign leads to this user');
     }
 
-    const updatedLeads = [];
-    for (const item of leads) {
-      const Model = getLeadModel(item.type);
-      if (!Model || !item.id) continue;
+    const { query: visibility } = await resolveLeadVisibility(req.user);
+    const modelGroups = [
+      { type: 'Customer', Model: Customer },
+      { type: 'Company', Model: Company },
+      { type: 'Lead', Model: Lead },
+    ];
+    const requestedByType = new Map(modelGroups.map(({ type }) => [
+      type,
+      Array.from(new Set(
+        leads.filter((item) => item?.type === type && item.id).map((item) => String(item.id)),
+      )),
+    ]));
 
-      const existingLead = await findUnifiedLeadForUser(item.type, item.id, req.user);
-      if (!existingLead) continue;
+    const visibleGroups = await Promise.all(modelGroups.map(async ({ type, Model }) => {
+      const ids = requestedByType.get(type);
+      if (!ids.length) return { type, Model, rows: [] };
+      const rows = await Model.find({ _id: { $in: ids }, ...visibility })
+        .select('name companyName customerName assignedTo')
+        .lean();
+      return { type, Model, rows };
+    }));
 
-      await ensureAssigneeArray(Model, existingLead);
-      const updatedLead = await Model.findByIdAndUpdate(
-        item.id,
-        { $addToSet: { assignedTo } },
-        { new: true }
-      ).populate('assignedTo', 'name');
+    const updateJobs = [];
+    const notificationOperations = [];
+    const activityOperations = [];
+    const followUpOperations = [];
+    let updatedCount = 0;
 
-      if (updatedLead) {
-        updatedLeads.push(updatedLead);
-        if (Model === Company) {
-          await FollowUp.updateMany(
-            { lead: updatedLead._id, status: { $in: ['Pending', 'Snoozed'] } },
-            { $set: { assignedTo: updatedLead.assignedTo.map((user) => user._id || user) } },
-          );
+    visibleGroups.forEach(({ type, Model, rows }) => {
+      if (!rows.length) return;
+      updatedCount += rows.length;
+      updateJobs.push(Model.bulkWrite(rows.map((lead) => ({
+        updateOne: {
+          filter: { _id: lead._id },
+          update: Array.isArray(lead.assignedTo)
+            ? { $addToSet: { assignedTo } }
+            : {
+                $set: {
+                  assignedTo: Array.from(new Set([
+                    ...normalizeAssignees(lead.assignedTo).map(String),
+                    String(assignedTo),
+                  ])),
+                },
+              },
+        },
+      })), { ordered: false }));
+
+      rows.forEach((lead) => {
+        const leadName = getLeadName(lead);
+        notificationOperations.push({
+          insertOne: {
+            document: {
+              title: 'New Lead Assigned',
+              message: `You have been assigned a new ${type} lead: ${leadName}.`,
+              type: 'info',
+              user: assignedTo,
+            },
+          },
+        });
+        activityOperations.push({
+          insertOne: {
+            document: {
+              user: req.user._id,
+              actionType: 'lead_assigned',
+              description: `Assigned ${leadName} to a user`,
+              entityType: type,
+              entityId: lead._id,
+              metadata: { assignedTo },
+            },
+          },
+        });
+        if (type === 'Company') {
+          followUpOperations.push({
+            updateMany: {
+              filter: { lead: lead._id, status: { $in: ['Pending', 'Snoozed'] } },
+              update: {
+                $set: {
+                  assignedTo: Array.from(new Set([
+                    ...normalizeAssignees(lead.assignedTo).map(String),
+                    String(assignedTo),
+                  ])),
+                },
+              },
+            },
+          });
         }
-        await Notification.create({
-          title: 'New Lead Assigned',
-          message: `You have been assigned a new ${item.type} lead: ${getLeadName(updatedLead)}.`,
-          type: 'info',
-          user: assignedTo,
-        });
+      });
+    });
 
-        await logActivity({
-          user: req.user._id,
-          actionType: 'lead_assigned',
-          description: `Assigned ${getLeadName(updatedLead)} to a user`,
-          entityType: item.type,
-          entityId: updatedLead._id,
-          metadata: { assignedTo },
-        });
-      }
+    if (notificationOperations.length) {
+      updateJobs.push(Notification.bulkWrite(notificationOperations, { ordered: false }));
     }
+    if (followUpOperations.length) {
+      updateJobs.push(FollowUp.bulkWrite(followUpOperations, { ordered: false }));
+    }
+    if (activityOperations.length) {
+      updateJobs.push(
+        ActivityLog.bulkWrite(activityOperations, { ordered: false })
+          .catch((error) => console.error('Bulk activity log failed:', error.message)),
+      );
+    }
+    await Promise.all(updateJobs);
 
-    if (updatedLeads.length > 0) await invalidateLeadMetricsCaches();
-    return successResponse(res, 200, `${updatedLeads.length} leads assigned successfully`, {
-      updatedCount: updatedLeads.length,
+    if (updatedCount > 0) await invalidateLeadMetricsCaches();
+    return successResponse(res, 200, `${updatedCount} leads assigned successfully`, {
+      updatedCount,
     });
   } catch (error) {
     next(error);

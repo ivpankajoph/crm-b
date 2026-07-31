@@ -72,7 +72,7 @@ export const logout = (req, res) => {
  */
 export const getMe = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user._id);
+    const user = req.user;
     if (user) {
       const access = await resolveEffectiveAccess(user);
 

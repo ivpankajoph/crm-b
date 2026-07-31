@@ -33,7 +33,6 @@ import followUpRoutes from './routes/followUpRoutes.js';
 import teamRoutes from './routes/teamRoutes.js';
 import templateAccessRoutes from './routes/templateAccessRoutes.js';
 import auditLogRoutes from './routes/auditLogRoutes.js';
-import emailMarketingRouter from './modules/email-marketing/index.js';
 import {
   resolveEffectiveAccess,
   userHasPermission,
@@ -45,9 +44,36 @@ dotenv.config();
 // The shared WhatsApp module uses this name; CRM already connects with
 // MONGODB_URI, so both applications intentionally use the same database.
 process.env.MONGODB_URL ||= process.env.MONGODB_URI;
-const { default: whatsappMarketingRouter } = await import(
-  './modules/whatsapp-marketing/index.js'
+let whatsappMarketingRouterPromise;
+const createLazyRouter = (loadRouter) => {
+  let routerPromise;
+  return (req, res, next) => {
+    routerPromise ||= loadRouter().catch((error) => {
+      routerPromise = null;
+      throw error;
+    });
+    void routerPromise.then((router) => router(req, res, next)).catch(next);
+  };
+};
+const lazyEmailMarketingRouter = createLazyRouter(
+  () => import('./modules/email-marketing/index.js').then((module) => module.default),
 );
+const loadWhatsAppMarketingRouter = () => {
+  if (!whatsappMarketingRouterPromise) {
+    whatsappMarketingRouterPromise = import('./modules/whatsapp-marketing/index.js')
+      .then((module) => module.default)
+      .catch((error) => {
+        whatsappMarketingRouterPromise = null;
+        throw error;
+      });
+  }
+  return whatsappMarketingRouterPromise;
+};
+const lazyWhatsAppMarketingRouter = (req, res, next) => {
+  void loadWhatsAppMarketingRouter()
+    .then((router) => router(req, res, next))
+    .catch(next);
+};
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -262,8 +288,8 @@ app.use('/api/follow-ups', followUpRoutes);
 app.use('/api/teams', teamRoutes);
 app.use('/api/template-access', templateAccessRoutes);
 app.use('/api/audit-logs', auditLogRoutes);
-app.use('/api/email-marketing', emailMarketingRouter);
-app.use('/api/whatsapp-marketing', bridgeCrmUserToWhatsApp, whatsappMarketingRouter);
+app.use('/api/email-marketing', lazyEmailMarketingRouter);
+app.use('/api/whatsapp-marketing', bridgeCrmUserToWhatsApp, lazyWhatsAppMarketingRouter);
 
 // Root route
 app.get('/', (req, res) => {

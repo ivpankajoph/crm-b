@@ -4,7 +4,13 @@ import { successResponse, errorResponse } from '../utils/response.js';
 import { isAdminUser } from '../utils/hierarchy.js';
 import { logActivity } from '../utils/activity.js';
 import { invalidateLeadMetricsCaches } from '../services/cacheService.js';
-import { escapeRegex } from '../services/listQueryService.js';
+import {
+  escapeRegex,
+  pagedData,
+  paginationMeta,
+  parsePagination,
+  safeSort,
+} from '../services/listQueryService.js';
 import { resolveLeadVisibility } from '../services/leadAccessService.js';
 import { userHasPermission } from '../services/accessControlService.js';
 import { PERMISSIONS } from '../constants/permissions.js';
@@ -26,9 +32,46 @@ export const getCustomers = async (req, res, next) => {
 
     const customers = await Customer.find(query)
       .populate('createdBy', 'name role email')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
     
     return successResponse(res, 200, 'Customers fetched successfully', customers);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getCustomersPaged = async (req, res, next) => {
+  try {
+    const { page, limit, skip, search } = parsePagination(req.query);
+    const { query: visibility } = await resolveLeadVisibility(req.user);
+    const filter = { ...visibility };
+    if (search) {
+      const pattern = new RegExp(escapeRegex(search), 'i');
+      filter.$or = [
+        { name: pattern },
+        { email: pattern },
+        { phone: pattern },
+        { company: pattern },
+      ];
+    }
+    if (req.query.status && req.query.status !== 'all') filter.leadStatus = req.query.status;
+
+    const [items, total] = await Promise.all([
+      Customer.find(filter)
+        .select('name email phone company designation website status totalSpend leadStatus scheduledDateTime createdBy assignedTo createdAt')
+        .populate('createdBy', 'name role')
+        .populate('assignedTo', 'name')
+        .sort(safeSort(req.query, ['createdAt', 'name', 'company', 'leadStatus']))
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Customer.countDocuments(filter),
+    ]);
+    return successResponse(res, 200, 'Customers page fetched successfully', pagedData(
+      items,
+      paginationMeta({ page, limit, total }),
+    ));
   } catch (error) {
     next(error);
   }

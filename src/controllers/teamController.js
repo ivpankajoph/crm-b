@@ -9,6 +9,14 @@ import {
   resolveAccountOwnerId,
 } from '../services/accessControlService.js';
 import { getDownlineUserIds } from '../utils/hierarchy.js';
+import {
+  cacheKeys,
+  getReferenceCacheVersion,
+  invalidateAccessCaches,
+  invalidateAuthenticatedUserCache,
+  invalidateTeamReferenceCaches,
+  withJsonCache,
+} from '../services/cacheService.js';
 
 const normalizeIds = (values = []) => Array.from(new Set(
   (Array.isArray(values) ? values : [])
@@ -47,12 +55,16 @@ export const getTeams = async (req, res, next) => {
   try {
     const ownerId = await resolveAccountOwnerId(req.user);
     const filter = { createdBy: ownerId };
-    if (req.query.status && req.query.status !== 'all') {
-      filter.status = req.query.status;
+    const status = req.query.status && req.query.status !== 'all'
+      ? req.query.status
+      : 'all';
+    if (status !== 'all') {
+      filter.status = status;
     }
-
-    const teams = await populateTeam(
-      Team.find(filter).sort({ status: 1, name: 1 }),
+    const version = await getReferenceCacheVersion();
+    const { value: teams } = await withJsonCache(
+      { key: cacheKeys.teams(version, ownerId, status), ttlSeconds: 300 },
+      () => populateTeam(Team.find(filter).sort({ status: 1, name: 1 })).lean(),
     );
     return successResponse(res, 200, 'Teams fetched successfully', teams);
   } catch (error) {
@@ -103,6 +115,11 @@ export const createTeam = async (req, res, next) => {
       entityId: team._id,
       metadata: { manager: managerId, memberIds },
     });
+    await Promise.all([
+      invalidateTeamReferenceCaches(),
+      invalidateAccessCaches(),
+      ...memberIds.map(invalidateAuthenticatedUserCache),
+    ]);
 
     const populated = await populateTeam(Team.findById(team._id));
     return successResponse(res, 201, 'Team created successfully', populated);
@@ -123,6 +140,7 @@ export const updateTeam = async (req, res, next) => {
     const memberIds = req.body.memberIds === undefined
       ? team.members.map(String)
       : normalizeIds(req.body.memberIds);
+    const previousMemberIds = team.members.map(String);
     const managerId = req.body.managerId === undefined
       ? team.manager?.toString() || null
       : mongoose.isValidObjectId(req.body.managerId)
@@ -157,6 +175,12 @@ export const updateTeam = async (req, res, next) => {
       entityId: team._id,
       metadata: { manager: managerId, memberIds, status: team.status },
     });
+    await Promise.all([
+      invalidateTeamReferenceCaches(),
+      invalidateAccessCaches(),
+      ...Array.from(new Set([...previousMemberIds, ...memberIds]))
+        .map(invalidateAuthenticatedUserCache),
+    ]);
 
     const populated = await populateTeam(Team.findById(team._id));
     return successResponse(res, 200, 'Team updated successfully', populated);
@@ -174,6 +198,7 @@ export const deactivateTeam = async (req, res, next) => {
     const team = await Team.findOne({ _id: req.params.id, createdBy: ownerId });
     if (!team) return errorResponse(res, 404, 'Team not found');
 
+    const previousMemberIds = team.members.map(String);
     team.status = 'inactive';
     team.updatedBy = req.user._id;
     await team.save();
@@ -186,6 +211,11 @@ export const deactivateTeam = async (req, res, next) => {
       entityType: 'Team',
       entityId: team._id,
     });
+    await Promise.all([
+      invalidateTeamReferenceCaches(),
+      invalidateAccessCaches(),
+      ...previousMemberIds.map(invalidateAuthenticatedUserCache),
+    ]);
 
     return successResponse(res, 200, 'Team deactivated successfully', team);
   } catch (error) {

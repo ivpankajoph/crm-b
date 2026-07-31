@@ -26,7 +26,8 @@ export const getCompanies = async (req, res, next) => {
 
     const companies = await Company.find(query)
       .populate('createdBy', 'name role email')
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
     
     return successResponse(res, 200, 'Companies fetched successfully', companies);
   } catch (error) {
@@ -215,18 +216,23 @@ export const updateCompany = async (req, res, next) => {
       return errorResponse(res, 403, 'You do not have permission to assign leads');
     }
 
-    company = await Company.findByIdAndUpdate(req.params.id, {
-      companyName, customerName, customerDesignation, email1, email2, 
-      mobileNo, phoneNo, products, businessType, address1, address2, 
-      city, state, country, website1, website2, followTypeDate, followType,
-      messageNotes, scheduledDateTime,
-      leadStatus: finalLeadStatus || oldStatus
-    }, { new: true, runValidators: true }).populate('createdBy', 'name role email');
-
-    if (assignedTo) {
-      await Company.findByIdAndUpdate(company._id, { $addToSet: { assignedTo } });
-      company = await Company.findById(company._id).populate('createdBy', 'name role email').populate('assignedTo', 'name role email');
-    }
+    const update = {
+      $set: {
+        companyName, customerName, customerDesignation, email1, email2,
+        mobileNo, phoneNo, products, businessType, address1, address2,
+        city, state, country, website1, website2, followTypeDate, followType,
+        messageNotes, scheduledDateTime,
+        leadStatus: finalLeadStatus || oldStatus,
+      },
+    };
+    if (assignedTo) update.$addToSet = { assignedTo };
+    company = await Company.findOneAndUpdate(
+      { _id: req.params.id, ...visibility },
+      update,
+      { new: true, runValidators: true },
+    )
+      .populate('createdBy', 'name role email')
+      .populate('assignedTo', 'name role email');
 
     if (finalLeadStatus && oldStatus !== finalLeadStatus) {
       await LeadStatusHistory.create({

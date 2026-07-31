@@ -8,6 +8,11 @@ import {
   combineEmployeeFilters,
   resolveEmployeeVisibility,
 } from '../services/employeeAccessService.js';
+import {
+  invalidateAccessCaches,
+  invalidateAuthenticatedUserCache,
+  invalidateUserReferenceCaches,
+} from '../services/cacheService.js';
 
 const populateFields = [
   { path: 'manager', select: 'name email role' },
@@ -195,6 +200,7 @@ export const createEmployee = async (req, res, next) => {
     await syncRoleUserCounts(selectedRole);
 
     const populatedEmployee = await Employee.findById(createdEmployee._id).populate(populateFields);
+    await Promise.all([invalidateUserReferenceCaches(), invalidateAccessCaches()]);
     return successResponse(res, 201, 'Employee and User created successfully', populatedEmployee);
   } catch (error) {
     if (createdEmployee?._id) {
@@ -322,6 +328,11 @@ export const updateEmployee = async (req, res, next) => {
     }
 
     const populatedEmployee = await Employee.findById(updatedEmployee._id).populate(populateFields);
+    await Promise.all([
+      invalidateUserReferenceCaches(),
+      invalidateAccessCaches(),
+      invalidateAuthenticatedUserCache(linkedUser?._id),
+    ]);
     return successResponse(res, 200, 'Employee updated successfully', populatedEmployee);
   } catch (error) {
     next(error);

@@ -1,14 +1,23 @@
 import Setting from '../models/Setting.js';
+import {
+  cacheKeys,
+  deleteCachedKeys,
+  withJsonCache,
+} from '../services/cacheService.js';
 
 // @desc    Get global settings
 // @route   GET /api/settings
 // @access  Private
 export const getSettings = async (req, res, next) => {
   try {
-    let settings = await Setting.findOne();
-    if (!settings) {
-      settings = await Setting.create({});
-    }
+    const { value: settings } = await withJsonCache(
+      { key: cacheKeys.settings, ttlSeconds: 300 },
+      async () => {
+        let value = await Setting.findOne().lean();
+        if (!value) value = (await Setting.create({})).toObject();
+        return value;
+      },
+    );
     res.json({ success: true, data: settings });
   } catch (error) {
     next(error);
@@ -33,6 +42,7 @@ export const updateSettings = async (req, res, next) => {
     if (contactPhone !== undefined) settings.contactPhone = contactPhone;
 
     await settings.save();
+    await deleteCachedKeys(cacheKeys.settings);
     
     res.json({ success: true, data: settings, message: 'Settings updated successfully' });
   } catch (error) {
