@@ -25,6 +25,7 @@ import { resolveEffectiveAccessMany, userHasPermission } from '../services/acces
 import { PERMISSIONS } from '../constants/permissions.js';
 import LeadMessage from '../models/LeadMessage.js';
 import ActivityLog from '../models/ActivityLog.js';
+import { sendAutomatedLeadStatusNotifications } from '../services/leadStatusNotificationService.js';
 
 const STATUS_ALIASES = {
   demo_scheduled: 'Demo Scheduled',
@@ -455,6 +456,14 @@ export const createLead = async (req, res, next) => {
       entityId: lead._id,
     });
 
+    await sendAutomatedLeadStatusNotifications({
+      leadType: 'Lead',
+      lead,
+      status: finalStatus,
+      actorUserId: req.user._id,
+      trigger: 'lead_created',
+    });
+
     const populatedLead = await Lead.findById(lead._id).populate('createdBy', 'name role email').populate('assignedTo', 'name role email');
 
     await invalidateLeadMetricsCaches();
@@ -603,6 +612,16 @@ export const updateLeadStatus = async (req, res, next) => {
         entityId: lead._id,
         metadata: { oldStatus, newStatus, statusDate: statusChangedAt.toISOString() },
       });
+
+      if (!(Model === Company && newStatus === 'Follow Up')) {
+        await sendAutomatedLeadStatusNotifications({
+          leadType: type,
+          lead,
+          status: newStatus,
+          actorUserId: req.user._id,
+          trigger: 'status_changed',
+        });
+      }
     } else if (parsedStatusDetails || cleanedComment) {
       await LeadStatusHistory.create({
         lead: lead._id,
@@ -663,6 +682,16 @@ export const updateLeadFollowUp = async (req, res, next) => {
       entityId: lead._id,
       metadata: update,
     });
+
+    if (update.followUpRequired) {
+      await sendAutomatedLeadStatusNotifications({
+        leadType: 'Company',
+        lead,
+        status: 'Follow Up',
+        actorUserId: req.user._id,
+        trigger: 'follow_up_saved',
+      });
+    }
 
     return successResponse(
       res,
