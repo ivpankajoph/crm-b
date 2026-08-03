@@ -10,7 +10,10 @@ import {
   sanitizeDataScopes,
   expandImpliedPermissions,
 } from '../../constants/permissions.js';
-import { userHasPermission } from '../accessControlService.js';
+import {
+  getAccountUserIds,
+  userHasPermission,
+} from '../accessControlService.js';
 import Role from '../../models/Role.js';
 import User from '../../models/User.js';
 import Team from '../../models/Team.js';
@@ -50,6 +53,43 @@ test('permission checks support exact, namespace, and administrator grants', () 
   assert.equal(userHasPermission({ grants: ['leads.*'] }, 'leads.edit'), true);
   assert.equal(userHasPermission({ grants: ['*'] }, 'admin.users.manage'), true);
   assert.equal(userHasPermission({ grants: ['leads.view'] }, 'leads.delete'), false);
+});
+
+test('account membership follows createdBy roots and parent report chains', { concurrency: false }, async () => {
+  const originalFind = User.find;
+  const ownerId = new mongoose.Types.ObjectId();
+  const managerId = new mongoose.Types.ObjectId();
+  const reportOneId = new mongoose.Types.ObjectId();
+  const reportTwoId = new mongoose.Types.ObjectId();
+  const levels = [
+    [{ _id: managerId }],
+    [{ _id: reportOneId }, { _id: reportTwoId }],
+    [],
+  ];
+  let call = 0;
+  const filters = [];
+  try {
+    User.find = (filter) => ({
+      select: () => ({
+        lean: async () => {
+          filters.push(filter);
+          return levels[call++] || [];
+        },
+      }),
+    });
+    const ids = await getAccountUserIds(ownerId);
+    assert.deepEqual(new Set(ids), new Set([
+      String(ownerId),
+      String(managerId),
+      String(reportOneId),
+      String(reportTwoId),
+    ]));
+    assert.deepEqual(filters[0].$or[0].parent.$in, [ownerId]);
+    assert.deepEqual(filters[0].$or[1].$and[1].createdBy.$in, [ownerId]);
+    assert.deepEqual(filters[1].$or[0].parent.$in, [String(managerId)]);
+  } finally {
+    User.find = originalFind;
+  }
 });
 
 test('action permissions include the page access required to use them', () => {

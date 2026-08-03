@@ -6,9 +6,9 @@ import Role from '../models/Role.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { logActivity } from '../utils/activity.js';
 import {
+  getAccountUserIds,
   resolveAccountOwnerId,
 } from '../services/accessControlService.js';
-import { getDownlineUserIds } from '../utils/hierarchy.js';
 import {
   cacheKeys,
   getReferenceCacheVersion,
@@ -32,7 +32,7 @@ const populateTeam = (query) => query
 
 const assertUsersBelongToAccount = async (ownerId, userIds) => {
   if (!userIds.length) return;
-  const allowedIds = new Set((await getDownlineUserIds(ownerId)).map(String));
+  const allowedIds = new Set(await getAccountUserIds(ownerId));
   const invalid = userIds.find((id) => !allowedIds.has(String(id)));
   if (invalid) {
     const error = new Error('One or more selected users do not belong to this account');

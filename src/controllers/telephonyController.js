@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 import CallLog from '../models/CallLog.js';
 import Setting from '../models/Setting.js';
+import User from '../models/User.js';
 import { errorResponse, successResponse } from '../utils/response.js';
 import { normalizePhone, plivoRequest } from '../services/plivoService.js';
 import { resolveUserDataScope, ownershipFilter } from '../services/dataScopeService.js';
@@ -171,7 +172,8 @@ const ensureBrowserApplication = async () => {
 };
 
 const ensureBrowserEndpoint = async (user) => {
-  const endpointUser = await user.constructor.findById(user._id).select('+plivoEndpointId +plivoEndpointUsername +plivoEndpointPassword');
+  const endpointUser = await User.findById(user._id).select('+plivoEndpointId +plivoEndpointUsername +plivoEndpointPassword');
+  if (!endpointUser) throw new Error('Authenticated user was not found');
   if (endpointUser.plivoEndpointUsername && endpointUser.plivoEndpointPassword) {
     return { username: endpointUser.plivoEndpointUsername, password: decryptEndpointPassword(endpointUser.plivoEndpointPassword) };
   }

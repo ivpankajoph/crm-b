@@ -13,6 +13,10 @@ import {
 } from '../constants/permissions.js';
 import { resolveUserDataScope } from '../services/dataScopeService.js';
 import {
+  getAccountUserIds,
+  resolveAccountOwnerId,
+} from '../services/accessControlService.js';
+import {
   cacheKeys,
   getReferenceCacheVersion,
   invalidateAccessCaches,
@@ -131,6 +135,10 @@ export const getUserOptions = async (req, res, next) => {
     const purpose = String(req.query.purpose || 'meeting');
     const search = String(req.query.search || '').trim();
     const filter = { isActive: true };
+    if (purpose === 'team') {
+      const ownerId = await resolveAccountOwnerId(req.user);
+      filter._id = { $in: await getAccountUserIds(ownerId) };
+    }
     if (purpose === 'attendance') {
       const visibility = await resolveUserDataScope(req.user, 'reports');
       if (visibility.scope === 'none') filter._id = { $exists: false };

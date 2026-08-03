@@ -926,7 +926,8 @@ export const startLeadCall = async (req, res, next) => {
     } catch (error) {
       callLog.status = 'failed';
       await callLog.save();
-      return errorResponse(res, 502, `Plivo call failed: ${error.message}`);
+      console.error('Call preparation failed:', error);
+      return errorResponse(res, 502, 'Call could not be started. Please try again.');
     }
 
     await logActivity({

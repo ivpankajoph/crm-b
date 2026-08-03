@@ -57,6 +57,35 @@ export const resolveAccountOwnerId = async (user) => {
   return user._id;
 };
 
+// Account membership follows the same rule as resolveAccountOwnerId:
+// parent takes precedence, and createdBy links root-level users to an owner.
+export const getAccountUserIds = async (ownerId) => {
+  const allowedIds = new Set([String(ownerId)]);
+  let frontier = [ownerId];
+
+  for (let depth = 0; depth < 50 && frontier.length; depth += 1) {
+    const users = await User.find({
+      isActive: true,
+      $or: [
+        { parent: { $in: frontier } },
+        {
+          $and: [
+            { parent: null },
+            { createdBy: { $in: frontier } },
+          ],
+        },
+      ],
+    }).select('_id').lean();
+    const next = users
+      .map((user) => String(user._id))
+      .filter((userId) => !allowedIds.has(userId));
+    next.forEach((userId) => allowedIds.add(userId));
+    frontier = next;
+  }
+
+  return Array.from(allowedIds);
+};
+
 const calculateEffectiveAccessWithRole = (user, role = null) => {
   if (!user) {
     return {
