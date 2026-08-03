@@ -14,6 +14,7 @@ import {
 import { resolveLeadVisibility } from '../services/leadAccessService.js';
 import { userHasPermission } from '../services/accessControlService.js';
 import { PERMISSIONS } from '../constants/permissions.js';
+import { sendAutomatedLeadStatusNotifications } from '../services/leadStatusNotificationService.js';
 
 const normalizeAssignees = (assignedTo) => {
   if (!assignedTo) return [];
@@ -166,6 +167,14 @@ export const createCustomer = async (req, res, next) => {
       entityId: customer._id,
     });
 
+    await sendAutomatedLeadStatusNotifications({
+      leadType: 'Customer',
+      lead: customer,
+      status: finalLeadStatus,
+      actorUserId: req.user._id,
+      trigger: 'lead_created',
+    });
+
     const populatedCustomer = await Customer.findById(customer._id).populate('createdBy', 'name role email');
 
     await invalidateLeadMetricsCaches();
@@ -226,6 +235,14 @@ export const updateCustomer = async (req, res, next) => {
         oldStatus,
         newStatus: finalLeadStatus,
         changedBy: req.user._id,
+      });
+
+      await sendAutomatedLeadStatusNotifications({
+        leadType: 'Customer',
+        lead: customer,
+        status: finalLeadStatus,
+        actorUserId: req.user._id,
+        trigger: 'status_changed',
       });
     }
     

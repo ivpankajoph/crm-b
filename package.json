@@ -15,6 +15,8 @@
     "test:part3": "node --test src/services/tests/part3Lists.test.js",
     "test:part4": "node --test src/services/tests/part4Performance.test.js",
     "test:lead-status-date": "node --test src/services/tests/leadStatusDate.test.js",
+    "test:lead-status-email": "node --test src/services/tests/leadStatusEmailTemplate.test.js",
+    "test:call-transcription": "node --test src/services/tests/geminiCallTranscription.test.js",
     "test:access-control": "node --test src/services/tests/accessControl.test.js"
   },
   "keywords": [],

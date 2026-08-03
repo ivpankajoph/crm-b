@@ -8,6 +8,7 @@ import {
   followUpReminderPayload,
   scheduleFollowUpReminder,
 } from '../services/followUpReminderService.js';
+import { sendAutomatedLeadStatusNotifications } from '../services/leadStatusNotificationService.js';
 
 const ACTIVE_STATUSES = ['Pending', 'Snoozed'];
 
@@ -117,6 +118,13 @@ export const saveLeadFollowUp = async (req, res) => {
     company.followUpReminder = parsed.followUpReminder;
     await company.save();
     await scheduleFollowUpReminder(followUp._id, followUp.nextReminderAt);
+    await sendAutomatedLeadStatusNotifications({
+      leadType: 'Company',
+      lead: company,
+      status: 'Follow Up',
+      actorUserId: req.user._id,
+      trigger: 'follow_up_saved',
+    });
 
     return res.json({
       message: 'Follow-up saved successfully',

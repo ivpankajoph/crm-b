@@ -5,6 +5,12 @@ import User from '../models/User.js';
 import { errorResponse, successResponse } from '../utils/response.js';
 import { normalizePhone, plivoRequest } from '../services/plivoService.js';
 import { resolveUserDataScope, ownershipFilter } from '../services/dataScopeService.js';
+import {
+  isGeminiTranscriptionConfigured,
+  isUsableTranscript,
+  MAX_TRANSCRIPTION_ATTEMPTS,
+  scheduleCallTranscription,
+} from '../services/geminiCallTranscriptionService.js';
 
 const publicBaseUrl = () => (process.env.PUBLIC_API_URL || '').trim().replace(/\/$/, '');
 const xmlEscape = (value) => String(value).replace(/[<>&"']/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[char]));
@@ -218,8 +224,7 @@ export const answerBrowserCall = async (req, res) => {
   await callLog.save();
   const callback = `${publicBaseUrl()}/api/telephony/webhooks/hangup/${callLog._id}/${callLog.webhookToken}`;
   const recordingCallbackUrl = `${publicBaseUrl()}/api/telephony/webhooks/recording/${callLog._id}/${callLog.webhookToken}`;
-  const transcriptionUrl = `${publicBaseUrl()}/api/telephony/webhooks/transcription/${callLog._id}/${callLog.webhookToken}`;
-  return res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Record startOnDialAnswer="true" redirect="false" fileFormat="mp3" recordChannelType="stereo" callbackUrl="${xmlEscape(recordingCallbackUrl)}" callbackMethod="POST" transcriptionType="auto" transcriptionUrl="${xmlEscape(transcriptionUrl)}" transcriptionMethod="POST" transcriptionReportType="full"/><Dial callerId="${xmlEscape(callLog.fromNumber)}" action="${xmlEscape(callback)}" method="POST" redirect="false" callbackUrl="${xmlEscape(callback)}" callbackMethod="POST"><Number>${xmlEscape(callLog.toNumber)}</Number></Dial></Response>`);
+  return res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Record startOnDialAnswer="true" redirect="false" fileFormat="mp3" recordChannelType="stereo" maxLength="14400" callbackUrl="${xmlEscape(recordingCallbackUrl)}" callbackMethod="POST"/><Dial callerId="${xmlEscape(callLog.fromNumber)}" action="${xmlEscape(callback)}" method="POST" redirect="false" callbackUrl="${xmlEscape(callback)}" callbackMethod="POST"><Number>${xmlEscape(callLog.toNumber)}</Number></Dial></Response>`);
 };
 
 export const recordingCallback = async (req, res) => {
@@ -234,19 +239,39 @@ export const recordingCallback = async (req, res) => {
     callLog.status = 'completed';
     callLog.endedAt = callLog.endedAt || new Date();
     callLog.hangupCause = callLog.hangupCause || 'Completed';
+    if (!isUsableTranscript(callLog.transcriptText)) {
+      callLog.transcriptText = '';
+      callLog.transcriptionStatus = isGeminiTranscriptionConfigured() ? 'pending' : 'failed';
+      callLog.transcriptionError = isGeminiTranscriptionConfigured()
+        ? ''
+        : 'Gemini API key is not configured on the backend';
+    }
   }
   await callLog.save();
+  if (callLog.recordingUrl) scheduleCallTranscription(callLog._id);
   return res.sendStatus(204);
 };
 
 export const transcriptionCallback = async (req, res) => {
   const callLog = await CallLog.findOne({ _id: req.params.callLogId, webhookToken: req.params.token }).select('+webhookToken');
   if (!callLog) return res.sendStatus(404);
-  const providerError = req.body.error || req.body.Error;
-  callLog.transcriptText = req.body.transcription || req.body.Transcription || callLog.transcriptText;
-  callLog.transcriptionError = providerError || '';
-  callLog.transcriptionStatus = providerError ? 'failed' : callLog.transcriptText ? 'completed' : 'pending';
+  const providerError = String(req.body.error || req.body.Error || '').trim();
+  const providerTranscript = req.body.transcription || req.body.Transcription || '';
+  if (isUsableTranscript(providerTranscript) && callLog.transcriptionStatus !== 'processing') {
+    callLog.transcriptText = String(providerTranscript).trim();
+    callLog.transcriptionError = '';
+    callLog.transcriptionStatus = 'completed';
+    callLog.transcriptionSource = 'plivo';
+    callLog.transcriptionCompletedAt = new Date();
+  } else if (!isUsableTranscript(callLog.transcriptText) && callLog.transcriptionStatus !== 'processing') {
+    callLog.transcriptText = '';
+    callLog.transcriptionError = providerError || 'Plivo did not return a usable transcript';
+    callLog.transcriptionStatus = 'failed';
+  }
   await callLog.save();
+  if (!isUsableTranscript(callLog.transcriptText) && callLog.recordingStatus === 'ready') {
+    scheduleCallTranscription(callLog._id);
+  }
   return res.sendStatus(204);
 };
 
@@ -333,6 +358,23 @@ export const getCallLogDetails = async (req, res, next) => {
       .populate('lead').populate('calledBy', 'name email role').populate('manualCommentBy', 'name');
     if (!call) return errorResponse(res, 404, 'Call not found');
     await syncActiveCallFromPlivo(call);
+    if (call.recordingStatus === 'ready' && !isUsableTranscript(call.transcriptText)) {
+      call.transcriptText = '';
+      const attempts = Number(call.transcriptionAttempts || 0);
+      const geminiConfigured = isGeminiTranscriptionConfigured();
+      if (call.transcriptionStatus === 'completed') {
+        call.transcriptionStatus = geminiConfigured ? 'pending' : 'failed';
+        call.transcriptionError = geminiConfigured ? '' : 'Gemini API key is not configured on the backend';
+        await call.save();
+      } else if (!geminiConfigured && call.transcriptionStatus !== 'processing') {
+        call.transcriptionStatus = 'failed';
+        call.transcriptionError = 'Gemini API key is not configured on the backend';
+        await call.save();
+      }
+      if (geminiConfigured && call.transcriptionStatus !== 'processing' && attempts < MAX_TRANSCRIPTION_ATTEMPTS) {
+        if (scheduleCallTranscription(call._id)) call.transcriptionStatus = 'processing';
+      }
+    }
     return successResponse(res, 200, 'Call details fetched', call);
   } catch (error) { next(error); }
 };

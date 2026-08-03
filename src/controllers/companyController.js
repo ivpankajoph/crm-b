@@ -8,6 +8,8 @@ import { escapeRegex, pagedData, paginationMeta, parsePagination, safeSort } fro
 import { resolveLeadVisibility } from '../services/leadAccessService.js';
 import { userHasPermission } from '../services/accessControlService.js';
 import { PERMISSIONS } from '../constants/permissions.js';
+import { sendAutomatedLeadStatusNotifications } from '../services/leadStatusNotificationService.js';
+import { parseStatusDetails } from '../utils/statusDetails.js';
 
 const normalizeAssignees = (assignedTo) => {
   if (!assignedTo) return [];
@@ -100,7 +102,7 @@ export const createCompany = async (req, res, next) => {
       companyName, customerName, customerDesignation, email1, email2, 
       mobileNo, phoneNo, products, businessType, address1, address2, 
       city, state, country, website1, website2, followTypeDate, followType,
-      leadStatus, assignedTo, messageNotes, scheduledDateTime
+      leadStatus, assignedTo, messageNotes, scheduledDateTime, statusDetails
     } = req.body;
 
     const finalLeadStatus = scheduledDateTime ? 'Demo Scheduled' : leadStatus || 'New';
@@ -114,6 +116,16 @@ export const createCompany = async (req, res, next) => {
       && !userHasPermission(req.access, PERMISSIONS.LEADS_ASSIGN)) {
       return errorResponse(res, 403, 'You do not have permission to assign leads');
     }
+
+    let parsedStatusDetails;
+    if (statusDetails !== undefined) {
+      try {
+        parsedStatusDetails = parseStatusDetails(finalLeadStatus, statusDetails);
+      } catch (error) {
+        return errorResponse(res, 400, error.message);
+      }
+    }
+    const effectiveScheduledDateTime = parsedStatusDetails?.demoDateTime || scheduledDateTime;
 
     const company = await Company.create({
       companyName,
@@ -133,10 +145,17 @@ export const createCompany = async (req, res, next) => {
       website1,
       website2,
       followTypeDate,
-      scheduledDateTime,
+      scheduledDateTime: effectiveScheduledDateTime,
       followType,
       messageNotes,
       leadStatus: finalLeadStatus,
+      ...(parsedStatusDetails ? {
+        statusDetails: {
+          ...parsedStatusDetails,
+          savedBy: req.user._id,
+          savedAt: new Date(),
+        },
+      } : {}),
       assignedTo: [assignedTo || req.user._id],
       createdBy: req.user._id // Taken from authMiddleware
     });
@@ -155,6 +174,14 @@ export const createCompany = async (req, res, next) => {
       description: `Created company lead ${company.companyName}`,
       entityType: 'Company',
       entityId: company._id,
+    });
+
+    await sendAutomatedLeadStatusNotifications({
+      leadType: 'Company',
+      lead: company,
+      status: finalLeadStatus,
+      actorUserId: req.user._id,
+      trigger: 'lead_created',
     });
 
     const populatedCompany = await Company.findById(company._id).populate('createdBy', 'name role email').populate('assignedTo', 'name role email');
@@ -241,6 +268,14 @@ export const updateCompany = async (req, res, next) => {
         oldStatus,
         newStatus: finalLeadStatus,
         changedBy: req.user._id,
+      });
+
+      await sendAutomatedLeadStatusNotifications({
+        leadType: 'Company',
+        lead: company,
+        status: finalLeadStatus,
+        actorUserId: req.user._id,
+        trigger: 'status_changed',
       });
     }
 
