@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import {
   isUsableTranscript,
   normalizeGeminiTranscript,
+  readableTranscriptionError,
 } from '../geminiCallTranscriptionService.js';
 import CallLog from '../../models/CallLog.js';
 
@@ -39,6 +40,13 @@ test('invalid or speechless Gemini results fail instead of saving misleading con
   );
 });
 
+test('Gemini provider JSON errors are converted to readable messages', () => {
+  assert.equal(
+    readableTranscriptionError(new Error('{"error":{"code":429,"message":"Prepayment credits are depleted","status":"RESOURCE_EXHAUSTED"}}')),
+    'Prepayment credits are depleted',
+  );
+});
+
 test('call schema supports the Gemini processing lifecycle and structured segments', () => {
   assert.ok(CallLog.schema.path('transcriptionStatus').enumValues.includes('processing'));
   assert.ok(CallLog.schema.path('transcriptionAttempts'));
@@ -51,4 +59,10 @@ test('browser call recording triggers backend Gemini transcription without Plivo
   assert.match(controller, /maxLength="14400"/);
   assert.match(controller, /scheduleCallTranscription\(callLog\._id\)/);
   assert.doesNotMatch(controller, /transcriptionType="auto"/);
+});
+
+test('manual transcription retry route is protected by Manage Calls permission', () => {
+  const routes = fs.readFileSync(new URL('../../routes/telephonyRoutes.js', import.meta.url), 'utf8');
+  assert.match(routes, /calls\/:callLogId\/transcription\/retry/);
+  assert.match(routes, /PERMISSIONS\.CALLS_MANAGE\), retryCallTranscription/);
 });

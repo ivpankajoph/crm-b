@@ -1,10 +1,21 @@
 import { sendAutomatedLeadStatusEmail } from './leadStatusEmailService.js';
 import { sendAutomatedLeadStatusWhatsApp } from './leadStatusWhatsAppService.js';
 
+export const resolveLeadNotificationChannels = (lead) => ({
+  emailEnabled: lead?.notificationPreferences?.emailEnabled === true,
+  whatsappEnabled: lead?.notificationPreferences?.whatsappEnabled === true,
+});
+
 export const sendAutomatedLeadStatusNotifications = async (context) => {
+  const { emailEnabled, whatsappEnabled } = resolveLeadNotificationChannels(context?.lead);
+
   const [emailResult, whatsappResult] = await Promise.allSettled([
-    sendAutomatedLeadStatusEmail(context),
-    sendAutomatedLeadStatusWhatsApp(context),
+    emailEnabled
+      ? sendAutomatedLeadStatusEmail(context)
+      : Promise.resolve({ status: 'skipped', reason: 'disabled_for_lead' }),
+    whatsappEnabled
+      ? sendAutomatedLeadStatusWhatsApp(context)
+      : Promise.resolve({ status: 'skipped', reason: 'disabled_for_lead' }),
   ]);
 
   const normalizeResult = (channel, result) => {

@@ -7,6 +7,7 @@ import { escapeRegex, pagedData, paginationMeta, parsePagination, safeSort } fro
 import { reconcileUserEmployee } from '../services/employeeUserReconciliationService.js';
 import Team from '../models/Team.js';
 import {
+  PERMISSIONS,
   PERMISSION_VALUES,
   normalizePermissionList,
   sanitizeDataScopes,
@@ -15,7 +16,10 @@ import { resolveUserDataScope } from '../services/dataScopeService.js';
 import {
   getAccountUserIds,
   resolveAccountOwnerId,
+  resolveEffectiveAccessMany,
+  userHasPermission,
 } from '../services/accessControlService.js';
+import { isAdminUser } from '../utils/hierarchy.js';
 import {
   cacheKeys,
   getReferenceCacheVersion,
@@ -183,6 +187,123 @@ export const getUserOptions = async (req, res, next) => {
         .lean();
     }
     return successResponse(res, 200, 'User options fetched successfully', users);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    List users to whom the current user may delegate lead notification access
+// @route   GET /api/users/lead-notification-delegates
+// @access  Private
+export const getLeadNotificationDelegates = async (req, res, next) => {
+  try {
+    const ownerId = await resolveAccountOwnerId(req.user);
+    const accountIds = (await getAccountUserIds(ownerId)).map(String);
+    let candidateIds = accountIds.filter((userId) => userId !== String(req.user._id));
+
+    if (!isAdminUser(req.user)) {
+      const managedTeams = await Team.find({
+        manager: req.user._id,
+        status: 'active',
+      }).select('members').lean();
+      const managedMemberIds = new Set(managedTeams.flatMap((team) => (
+        (team.members || []).map(String)
+      )));
+      candidateIds = candidateIds.filter((userId) => managedMemberIds.has(userId));
+    }
+
+    const users = await User.find({
+      _id: { $in: candidateIds },
+      isActive: true,
+      status: { $ne: 'inactive' },
+      role: { $not: /^admin$/i },
+    })
+      .select('_id name email role roleRef teams permissionOverrides scopeOverrides status isActive')
+      .sort({ name: 1 })
+      .lean();
+    const accessRows = await resolveEffectiveAccessMany(users);
+    const delegates = users.map((user, index) => ({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      enabled: userHasPermission(accessRows[index], PERMISSIONS.LEADS_MANAGE_NOTIFICATIONS),
+    }));
+
+    return successResponse(res, 200, 'Lead notification delegates fetched successfully', delegates);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Delegate only the lead-notification permission to an eligible user
+// @route   PUT /api/users/:id/lead-notification-access
+// @access  Private
+export const updateLeadNotificationAccess = async (req, res, next) => {
+  try {
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+      return errorResponse(res, 400, 'Access enabled value must be true or false');
+    }
+    if (String(req.params.id) === String(req.user._id)) {
+      return errorResponse(res, 400, 'You cannot change your own delegated access');
+    }
+
+    const ownerId = await resolveAccountOwnerId(req.user);
+    const accountIds = (await getAccountUserIds(ownerId)).map(String);
+    if (!accountIds.includes(String(req.params.id))) {
+      return errorResponse(res, 403, 'User is outside your account');
+    }
+
+    if (!isAdminUser(req.user)) {
+      const managesTarget = await Team.exists({
+        manager: req.user._id,
+        members: req.params.id,
+        status: 'active',
+      });
+      if (!managesTarget) {
+        return errorResponse(res, 403, 'You can only delegate access to active members of your team');
+      }
+    }
+
+    const user = await User.findOne({
+      _id: req.params.id,
+      isActive: true,
+      status: { $ne: 'inactive' },
+      role: { $not: /^admin$/i },
+    });
+    if (!user) return errorResponse(res, 404, 'Eligible user not found');
+
+    const permission = PERMISSIONS.LEADS_MANAGE_NOTIFICATIONS;
+    const allow = new Set(normalizePermissionList(user.permissionOverrides?.allow));
+    const deny = new Set(normalizePermissionList(user.permissionOverrides?.deny));
+    if (enabled) {
+      allow.add(permission);
+      deny.delete(permission);
+    } else {
+      allow.delete(permission);
+      deny.add(permission);
+    }
+    user.permissionOverrides = { allow: [...allow], deny: [...deny] };
+    await user.save();
+
+    await logActivity({
+      user: req.user._id,
+      actionType: 'lead_notification_access_updated',
+      description: `${enabled ? 'Granted' : 'Revoked'} lead notification access for ${user.name}`,
+      entityType: 'User',
+      entityId: user._id,
+      metadata: { permission, enabled },
+    });
+    await Promise.all([
+      invalidateAccessCaches(),
+      invalidateAuthenticatedUserCache(user._id),
+    ]);
+
+    return successResponse(res, 200, `Lead notification access ${enabled ? 'granted' : 'revoked'}`, {
+      _id: user._id,
+      enabled,
+    });
   } catch (error) {
     next(error);
   }

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import leadNotificationPreferencesSchema from './schemas/leadNotificationPreferences.js';
 
 const customerSchema = new mongoose.Schema({
   name: {
@@ -54,6 +55,10 @@ const customerSchema = new mongoose.Schema({
   },
   leadStatusChangedAt: {
     type: Date,
+  },
+  notificationPreferences: {
+    type: leadNotificationPreferencesSchema,
+    default: () => ({}),
   },
   leadSource: {
     type: String,

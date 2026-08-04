@@ -1,8 +1,8 @@
 import express from 'express';
-import { protect } from '../middleware/authMiddleware.js';
+import { adminOnly, protect } from '../middleware/authMiddleware.js';
 import { requirePermission } from '../middleware/permissionMiddleware.js';
 import { PERMISSIONS } from '../constants/permissions.js';
-import { answerBrowserCall, answerClickToCall, buyNumber, finalizeBrowserCall, getCallLogDetails, getTelephonyConfig, hangupClickToCall, listCallLogs, recordingCallback, searchNumbers, selectNumber, transcriptionCallback } from '../controllers/telephonyController.js';
+import { answerBrowserCall, answerClickToCall, buyNumber, finalizeBrowserCall, getCallLogDetails, getTelephonyConfig, hangupClickToCall, listCallLogs, recordingCallback, retryCallTranscription, searchNumbers, selectNumber, transcriptionCallback, updateActiveCallingPool } from '../controllers/telephonyController.js';
 
 const router = express.Router();
 router.post('/webhooks/answer/:callLogId/:token', answerClickToCall);
@@ -12,9 +12,11 @@ router.post('/webhooks/recording/:callLogId/:token', recordingCallback);
 router.post('/webhooks/transcription/:callLogId/:token', transcriptionCallback);
 router.get('/calls', protect, requirePermission(PERMISSIONS.CALLS_VIEW), listCallLogs);
 router.get('/calls/:callLogId', protect, requirePermission(PERMISSIONS.CALLS_VIEW), getCallLogDetails);
+router.post('/calls/:callLogId/transcription/retry', protect, requirePermission(PERMISSIONS.CALLS_MANAGE), retryCallTranscription);
 router.post('/calls/:callLogId/finalize', protect, requirePermission(PERMISSIONS.CALLS_MANAGE), finalizeBrowserCall);
 router.get('/numbers', protect, requirePermission(PERMISSIONS.CALLS_MANAGE), getTelephonyConfig);
-router.get('/numbers/search', protect, requirePermission(PERMISSIONS.CALLS_MANAGE), searchNumbers);
-router.post('/numbers/buy', protect, requirePermission(PERMISSIONS.CALLS_MANAGE), buyNumber);
-router.put('/numbers/default', protect, requirePermission(PERMISSIONS.CALLS_MANAGE), selectNumber);
+router.get('/numbers/search', protect, adminOnly, searchNumbers);
+router.post('/numbers/buy', protect, adminOnly, buyNumber);
+router.put('/numbers/default', protect, adminOnly, selectNumber);
+router.put('/numbers/active-pool', protect, adminOnly, updateActiveCallingPool);
 export default router;
