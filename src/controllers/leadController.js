@@ -10,9 +10,9 @@ import FollowUp from '../models/FollowUp.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { getDownlineUserIds, isAdminUser } from '../utils/hierarchy.js';
 import { logActivity } from '../utils/activity.js';
-import Setting from '../models/Setting.js';
 import { createPlivoBridge, prepareBrowserCall } from './telephonyController.js';
 import { normalizePhone } from '../services/plivoService.js';
+import { selectNextCallingNumber } from '../services/callingNumberPoolService.js';
 import { getCachedLeadStats } from '../services/leadStatsService.js';
 import { invalidateLeadMetricsCaches } from '../services/cacheService.js';
 import { escapeRegex, pagedData, paginationMeta, parsePagination } from '../services/listQueryService.js';
@@ -508,6 +508,59 @@ export const getUnifiedLead = async (req, res, next) => {
   }
 };
 
+// @desc    Update per-lead automatic notification preferences
+// @route   PATCH /api/leads/unified/:type/:id/notification-preferences
+// @access  Private
+export const updateLeadNotificationPreferences = async (req, res, next) => {
+  try {
+    const { type, id } = req.params;
+    const { channel, enabled } = req.body;
+    const Model = getLeadModel(type);
+    const preferenceField = channel === 'email'
+      ? 'emailEnabled'
+      : channel === 'whatsapp' ? 'whatsappEnabled' : null;
+
+    if (!Model || !preferenceField) {
+      return errorResponse(res, 400, 'Invalid lead type or notification channel');
+    }
+    if (typeof enabled !== 'boolean') {
+      return errorResponse(res, 400, 'Notification enabled value must be true or false');
+    }
+
+    const existingLead = await findUnifiedLeadForUser(type, id, req.user);
+    if (!existingLead) return errorResponse(res, 404, 'Lead not found');
+
+    const previousValue = existingLead.notificationPreferences?.[preferenceField] === true;
+    const updatedAt = new Date();
+    const lead = await Model.findByIdAndUpdate(
+      id,
+      {
+        $set: {
+          [`notificationPreferences.${preferenceField}`]: enabled,
+          'notificationPreferences.updatedBy': req.user._id,
+          'notificationPreferences.updatedAt': updatedAt,
+        },
+      },
+      { new: true, runValidators: true },
+    ).populate('notificationPreferences.updatedBy', 'name role email');
+
+    await logActivity({
+      user: req.user._id,
+      actionType: 'lead_notification_preference_updated',
+      description: `${enabled ? 'Enabled' : 'Disabled'} automatic ${channel} notifications for ${getLeadName(lead)}`,
+      entityType: type,
+      entityId: lead._id,
+      metadata: { channel, previousValue, enabled },
+    });
+
+    return successResponse(res, 200, `${channel === 'email' ? 'Email' : 'WhatsApp'} notifications ${enabled ? 'enabled' : 'disabled'}`, {
+      notificationPreferences: lead.notificationPreferences,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // @desc    Update lead status (unified)
 // @route   PUT /api/leads/unified/:type/:id/status
 // @access  Private
@@ -930,9 +983,12 @@ export const startLeadCall = async (req, res, next) => {
     const agentPhone = normalizePhone(req.user.phone);
     if (!leadPhone) return errorResponse(res, 400, 'Lead phone must include country code (for example +919876543210)');
     if (!browserMode && !agentPhone) return errorResponse(res, 400, 'Add your phone with country code in your CRM user profile before calling');
-    const settings = await Setting.findOne();
-    const callerId = normalizePhone(settings?.plivoNumber);
-    if (!callerId) return errorResponse(res, 400, 'An admin must select a Plivo virtual number in Calling');
+    let callerId;
+    try {
+      callerId = await selectNextCallingNumber();
+    } catch (error) {
+      return errorResponse(res, error.statusCode || 409, error.message);
+    }
 
     const callLog = await CallLog.create({
       lead: lead._id,

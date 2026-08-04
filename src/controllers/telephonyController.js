@@ -11,11 +11,26 @@ import {
   MAX_TRANSCRIPTION_ATTEMPTS,
   scheduleCallTranscription,
 } from '../services/geminiCallTranscriptionService.js';
+import { effectiveCallingPool, normalizeCallingPool } from '../services/callingNumberPoolService.js';
+import { logActivity } from '../utils/activity.js';
 
 const publicBaseUrl = () => (process.env.PUBLIC_API_URL || '').trim().replace(/\/$/, '');
 const xmlEscape = (value) => String(value).replace(/[<>&"']/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[char]));
 const exchangeRateCache = new Map();
 const providerStatusCheckCache = new Map();
+
+const getOwnedPlivoNumbers = async () => {
+  const numbers = [];
+  const limit = 20;
+  for (let offset = 0; offset < 1000; offset += limit) {
+    const response = await plivoRequest(`/Number/?limit=${limit}&offset=${offset}`);
+    const page = response.objects || [];
+    numbers.push(...page);
+    const total = Number(response.meta?.total_count || 0);
+    if (page.length < limit || (total && numbers.length >= total)) break;
+  }
+  return numbers;
+};
 
 const getUsdExchangeRate = async (currency) => {
   if (currency === 'USD') return 1;
@@ -33,11 +48,14 @@ const getUsdExchangeRate = async (currency) => {
 export const getTelephonyConfig = async (_req, res, next) => {
   try {
     const settings = await Setting.findOne();
-    const response = await plivoRequest('/Number/?limit=20');
+    const numbers = await getOwnedPlivoNumbers();
+    const activeNumbers = effectiveCallingPool(settings);
     return successResponse(res, 200, 'Plivo numbers fetched', {
       configured: true,
       selectedNumber: settings?.plivoNumber || '',
-      numbers: response.objects || [],
+      activeNumbers,
+      poolConfigured: settings?.callingPoolConfigured === true,
+      numbers,
     });
   } catch (error) { next(error); }
 };
@@ -89,14 +107,64 @@ export const selectNumber = async (req, res, next) => {
   try {
     const number = normalizePhone(req.body.number);
     if (!number) return errorResponse(res, 400, 'Enter a valid E.164 phone number');
-    const owned = await plivoRequest('/Number/?limit=20');
-    if (!(owned.objects || []).some((item) => normalizePhone(item.number) === number)) {
+    const owned = await getOwnedPlivoNumbers();
+    if (!owned.some((item) => normalizePhone(item.number) === number)) {
       return errorResponse(res, 400, 'That number is not present in your Plivo account');
     }
     const settings = (await Setting.findOne()) || new Setting();
     settings.plivoNumber = number;
+    settings.activePlivoNumbers = [number];
+    settings.callingPoolConfigured = true;
+    settings.plivoNumberPoolCursor = 0;
     await settings.save();
     return successResponse(res, 200, 'Default calling number updated', { selectedNumber: number });
+  } catch (error) { next(error); }
+};
+
+export const updateActiveCallingPool = async (req, res, next) => {
+  try {
+    if (!Array.isArray(req.body.numbers)) {
+      return errorResponse(res, 400, 'Calling pool numbers must be an array');
+    }
+    const rawNumbers = req.body.numbers.filter((value) => String(value || '').trim());
+    const numbers = normalizeCallingPool(rawNumbers);
+    if (numbers.length !== new Set(rawNumbers.map((value) => String(value).trim())).size) {
+      return errorResponse(res, 400, 'Calling pool contains an invalid phone number');
+    }
+
+    const owned = await getOwnedPlivoNumbers();
+    const ownedNumbers = new Set(owned.map((item) => normalizePhone(item.number)).filter(Boolean));
+    const unavailable = numbers.filter((number) => !ownedNumbers.has(number));
+    if (unavailable.length) {
+      return errorResponse(res, 400, `These numbers are not available in your Plivo account: ${unavailable.join(', ')}`);
+    }
+
+    const settings = (await Setting.findOne()) || new Setting();
+    const previousNumbers = effectiveCallingPool(settings);
+    settings.activePlivoNumbers = numbers;
+    settings.callingPoolConfigured = true;
+    settings.plivoNumber = numbers[0] || '';
+    settings.plivoNumberPoolCursor = 0;
+    await settings.save();
+
+    await logActivity({
+      user: req.user._id,
+      actionType: 'calling_number_pool_updated',
+      description: `Updated active calling pool to ${numbers.length} number${numbers.length === 1 ? '' : 's'}`,
+      entityType: 'Setting',
+      entityId: settings._id,
+      metadata: {
+        previousNumbers,
+        activeNumbers: numbers,
+        addedNumbers: numbers.filter((number) => !previousNumbers.includes(number)),
+        removedNumbers: previousNumbers.filter((number) => !numbers.includes(number)),
+      },
+    });
+
+    return successResponse(res, 200, 'Active calling pool updated', {
+      activeNumbers: numbers,
+      poolConfigured: true,
+    });
   } catch (error) { next(error); }
 };
 
@@ -333,9 +401,15 @@ export const listCallLogs = async (req, res, next) => {
     await reconcileStaleCallStatuses();
     const page = Math.max(1, Number.parseInt(String(req.query.page || '1'), 10) || 1);
     const limit = 20;
-    const filter = await callAccessFilter(req.user, req.access);
+    const accessFilter = await callAccessFilter(req.user, req.access);
+    const filter = { ...accessFilter };
     if (req.query.status && req.query.status !== 'all') filter.status = req.query.status;
-    const [calls, total] = await Promise.all([
+    if (req.query.fromNumber && req.query.fromNumber !== 'all') {
+      const fromNumber = normalizePhone(req.query.fromNumber);
+      if (!fromNumber) return errorResponse(res, 400, 'Invalid calling number filter');
+      filter.fromNumber = fromNumber;
+    }
+    const [calls, total, callingNumbers] = await Promise.all([
       CallLog.find(filter)
         .select('lead leadModel calledBy callDatetime durationSeconds fromNumber toNumber status recordingStatus transcriptionStatus hangupCause')
         .populate('lead', 'name companyName customerName')
@@ -345,8 +419,16 @@ export const listCallLogs = async (req, res, next) => {
         .limit(limit)
         .lean(),
       CallLog.countDocuments(filter),
+      CallLog.distinct('fromNumber', accessFilter),
     ]);
-    return successResponse(res, 200, 'Call history fetched', { calls, page, limit, total, pages: Math.ceil(total / limit) });
+    return successResponse(res, 200, 'Call history fetched', {
+      calls,
+      callingNumbers: callingNumbers.filter(Boolean).sort(),
+      page,
+      limit,
+      total,
+      pages: Math.ceil(total / limit),
+    });
   } catch (error) { next(error); }
 };
 
@@ -376,6 +458,43 @@ export const getCallLogDetails = async (req, res, next) => {
       }
     }
     return successResponse(res, 200, 'Call details fetched', call);
+  } catch (error) { next(error); }
+};
+
+export const retryCallTranscription = async (req, res, next) => {
+  try {
+    if (!isGeminiTranscriptionConfigured()) {
+      return errorResponse(res, 503, 'Gemini API key is not configured on the backend');
+    }
+    const accessFilter = await callAccessFilter(req.user, req.access);
+    const call = await CallLog.findOne({ _id: req.params.callLogId, ...accessFilter });
+    if (!call) return errorResponse(res, 404, 'Call not found');
+    if (call.recordingStatus !== 'ready' || !call.recordingUrl) {
+      return errorResponse(res, 409, 'The call recording is not ready for transcription');
+    }
+    if (call.transcriptionStatus === 'processing') {
+      return successResponse(res, 202, 'Transcript generation is already in progress', {
+        callLogId: call._id,
+        transcriptionStatus: 'processing',
+      });
+    }
+
+    call.transcriptText = '';
+    call.transcriptSegments = [];
+    call.transcriptLanguage = '';
+    call.transcriptionStatus = 'pending';
+    call.transcriptionError = '';
+    call.transcriptionSource = 'gemini';
+    call.transcriptionAttempts = 0;
+    call.transcriptionStartedAt = undefined;
+    call.transcriptionCompletedAt = undefined;
+    await call.save();
+    scheduleCallTranscription(call._id);
+
+    return successResponse(res, 202, 'Transcript generation restarted', {
+      callLogId: call._id,
+      transcriptionStatus: 'processing',
+    });
   } catch (error) { next(error); }
 };
 

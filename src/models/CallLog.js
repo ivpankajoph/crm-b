@@ -85,6 +85,7 @@ const callLogSchema = new mongoose.Schema(
 callLogSchema.index({ lead: 1, leadModel: 1, callDatetime: -1 });
 callLogSchema.index({ calledBy: 1, callDatetime: -1 });
 callLogSchema.index({ providerCallId: 1 });
+callLogSchema.index({ fromNumber: 1, callDatetime: -1 });
 
 const CallLog = mongoose.model('CallLog', callLogSchema);
 

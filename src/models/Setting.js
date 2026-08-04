@@ -21,6 +21,18 @@ const settingSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  activePlivoNumbers: {
+    type: [String],
+    default: [],
+  },
+  callingPoolConfigured: {
+    type: Boolean,
+    default: false,
+  },
+  plivoNumberPoolCursor: {
+    type: Number,
+    default: 0,
+  },
   plivoApplicationId: {
     type: String,
     default: ''

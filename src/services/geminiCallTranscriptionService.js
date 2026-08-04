@@ -13,6 +13,25 @@ const cleanText = (value, maxLength = 20_000) => String(value ?? '')
   .trim()
   .slice(0, maxLength);
 
+export const readableTranscriptionError = (error) => {
+  const raw = cleanText(error?.message || error || 'Gemini transcription failed', 20_000);
+  try {
+    const parsed = JSON.parse(raw);
+    return cleanText(parsed?.error?.message || parsed?.message || raw, 2_000);
+  } catch {
+    const jsonStart = raw.indexOf('{');
+    if (jsonStart >= 0) {
+      try {
+        const parsed = JSON.parse(raw.slice(jsonStart));
+        return cleanText(parsed?.error?.message || parsed?.message || raw, 2_000);
+      } catch {
+        // Fall back to the provider message below.
+      }
+    }
+    return cleanText(raw, 2_000);
+  }
+};
+
 export const isUsableTranscript = (value) => {
   const normalized = cleanText(value).toLowerCase();
   return Boolean(normalized) && !INVALID_TRANSCRIPTS.has(normalized);
@@ -202,7 +221,7 @@ export const transcribeCallRecording = async (callLogId) => {
     );
     return { status: 'completed' };
   } catch (error) {
-    const errorMessage = cleanText(error?.message || 'Gemini transcription failed', 2_000);
+    const errorMessage = readableTranscriptionError(error);
     await CallLog.updateOne(
       { _id: call._id, transcriptionStatus: 'processing', transcriptionSource: 'gemini' },
       { $set: { transcriptionStatus: 'failed', transcriptionError: errorMessage } },

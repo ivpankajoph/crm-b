@@ -6,6 +6,7 @@ import {
   getAllCombinedLeads,
   getAllCombinedLeadsPaged,
   getUnifiedLead,
+  updateLeadNotificationPreferences,
   updateLeadStatus,
   updateLeadFollowUp,
   addLeadComment,
@@ -60,6 +61,13 @@ router.route('/unified/:type/:id/calls')
 
 router.route('/unified/:type/:id/status')
   .put(protect, requirePermission(PERMISSIONS.LEADS_CHANGE_STATUS), updateLeadStatus);
+
+router.route('/unified/:type/:id/notification-preferences')
+  .patch(
+    protect,
+    requirePermission(PERMISSIONS.LEADS_MANAGE_NOTIFICATIONS),
+    updateLeadNotificationPreferences,
+  );
 
 router.route('/unified/:type/:id/follow-up')
   .put(protect, requirePermission(PERMISSIONS.LEADS_CHANGE_STATUS), updateLeadFollowUp);
