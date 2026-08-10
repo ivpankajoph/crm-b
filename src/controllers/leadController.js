@@ -488,6 +488,7 @@ export const getUnifiedLead = async (req, res, next) => {
     const [statusHistory, messages] = await Promise.all([
       LeadStatusHistory.find({ lead: id, leadModel: type })
         .populate('changedBy', 'name')
+        .populate('call')
         .sort({ changedAt: -1 })
         .limit(200)
         .lean(),
@@ -644,6 +645,15 @@ export const updateLeadStatus = async (req, res, next) => {
       }
     }
 
+    const lastCall = await CallLog.findOne({
+      lead: lead._id,
+      leadModel: type,
+      calledBy: req.user._id,
+      callDatetime: { $gte: new Date(Date.now() - 30 * 60 * 1000) }
+    }).sort({ callDatetime: -1 });
+
+    const callId = lastCall ? lastCall._id : null;
+
     if (oldStatus !== newStatus) {
       await LeadStatusHistory.create({
         lead: lead._id,
@@ -655,6 +665,7 @@ export const updateLeadStatus = async (req, res, next) => {
         entryType: 'status_change',
         details: parsedStatusDetails || null,
         comment: cleanedComment,
+        call: callId,
       });
 
       await logActivity({
@@ -686,6 +697,7 @@ export const updateLeadStatus = async (req, res, next) => {
         entryType: 'details_saved',
         details: parsedStatusDetails || { status: newStatus, note: cleanedComment },
         comment: cleanedComment || null,
+        call: callId,
       });
     }
 
