@@ -43,6 +43,11 @@ const leadStatusHistorySchema = new mongoose.Schema(
       maxlength: 4000,
       default: null,
     },
+    call: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'CallLog',
+      default: null,
+    },
   },
   { timestamps: true }
 );

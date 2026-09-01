@@ -22,12 +22,20 @@ import {
   sendLeadEmail,
   sendLeadWhatsApp,
 } from '../controllers/leadMessageController.js';
+import { enrichUrl } from '../controllers/extractController.js';
 import { upload } from '../middleware/uploadMiddleware.js';
 import { protect } from '../middleware/authMiddleware.js';
 import { requirePermission } from '../middleware/permissionMiddleware.js';
 import { PERMISSIONS } from '../constants/permissions.js';
 
 const router = express.Router();
+
+router.post(
+  '/enrich-url',
+  protect,
+  requirePermission(PERMISSIONS.LEADS_CREATE),
+  enrichUrl,
+);
 
 router.route('/stats')
   .get(protect, requirePermission(PERMISSIONS.LEADS_VIEW), getLeadStats);
