@@ -7,7 +7,14 @@ import { cacheKeys, getCachedJson, setCachedJson } from '../services/cacheServic
 export const protect = async (req, res, next) => {
   let token;
 
-  token = req.cookies.jwt;
+  if (req.cookies && req.cookies.jwt) {
+    token = req.cookies.jwt;
+  } else if (
+    req.headers.authorization &&
+    req.headers.authorization.startsWith('Bearer')
+  ) {
+    token = req.headers.authorization.split(' ')[1];
+  }
 
   if (token) {
     try {
@@ -23,7 +30,7 @@ export const protect = async (req, res, next) => {
       }
       next();
     } catch (error) {
-      console.error(error);
+      console.error('Token verification error:', error.message);
       return errorResponse(res, 401, 'Not authorized, token failed');
     }
   } else {

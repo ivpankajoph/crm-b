@@ -6,15 +6,21 @@ import { resolveEffectiveAccess } from '../services/accessControlService.js';
 // Generate JWT
 const generateToken = (res, userId) => {
   const token = jwt.sign({ userId }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRE,
+    expiresIn: process.env.JWT_EXPIRE || '7d',
   });
+
+  const isProduction = process.env.NODE_ENV === 'production' || process.env.NODE_ENV !== 'development';
+  const sameSite = process.env.COOKIE_SAME_SITE || (isProduction ? 'none' : 'lax');
+  const secure = process.env.COOKIE_SECURE !== undefined ? process.env.COOKIE_SECURE === 'true' : isProduction;
 
   res.cookie('jwt', token, {
     httpOnly: true,
-    secure: process.env.NODE_ENV !== 'development',
-    sameSite: 'strict',
+    secure,
+    sameSite,
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   });
+
+  return token;
 };
 
 /**
@@ -31,7 +37,7 @@ export const login = async (req, res, next) => {
     if (user && (await user.matchPassword(password))) {
       const access = await resolveEffectiveAccess(user);
 
-      generateToken(res, user._id);
+      const token = generateToken(res, user._id);
       return successResponse(res, 200, 'Login successful', {
         _id: user._id,
         name: user.name,
@@ -43,6 +49,7 @@ export const login = async (req, res, next) => {
         teamIds: access.teamIds,
         roleId: access.roleId,
         accessVersion: access.accessVersion,
+        token,
       });
     } else {
       return errorResponse(res, 401, 'Invalid email or password');
@@ -58,8 +65,14 @@ export const login = async (req, res, next) => {
  * @access  Public
  */
 export const logout = (req, res) => {
+  const isProduction = process.env.NODE_ENV === 'production' || process.env.NODE_ENV !== 'development';
+  const sameSite = process.env.COOKIE_SAME_SITE || (isProduction ? 'none' : 'lax');
+  const secure = process.env.COOKIE_SECURE !== undefined ? process.env.COOKIE_SECURE === 'true' : isProduction;
+
   res.cookie('jwt', '', {
     httpOnly: true,
+    secure,
+    sameSite,
     expires: new Date(0),
   });
   return successResponse(res, 200, 'Logged out successfully');

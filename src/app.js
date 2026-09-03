@@ -79,6 +79,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+app.set('trust proxy', 1);
 const envEnabled = (name, fallback = true) => {
   const value = process.env[name];
   if (value === undefined) return fallback;
@@ -245,7 +246,7 @@ if (envEnabled('RESPONSE_COMPRESSION_ENABLED')) {
     },
   }));
 }
-app.use(helmet());
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 app.use(express.json());
