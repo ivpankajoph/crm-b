@@ -147,7 +147,7 @@ const companyPeriodStatsPipeline = (visibility, range) => {
     {
       $group: {
         _id: null,
-        totalLeads: { $sum: { $cond: [dateInRange('$createdAt', range), 1, 0] } },
+        totalLeads: { $sum: 1 },
         demoScheduled: statusCount('Demo Scheduled', demoDate),
         followUp: statusCount('Follow Up', followUpDate),
         interested: statusCount('Interested'),
@@ -275,7 +275,7 @@ export const calculateLeadStatsLegacy = async (user, filters, visibilityOverride
       ...(periodRange ? { $expr: dateInRange(dateExpression, periodRange) } : {}),
     });
     const [total, demoScheduled, interested, notInterested, prospective, committed, converted, followUp] = await Promise.all([
-      Company.countDocuments({ ...visibility, ...(periodCreatedAt ? { createdAt: periodCreatedAt } : {}) }),
+      Company.countDocuments(visibility),
       countStatus('Demo Scheduled', {
         $ifNull: [
           '$scheduledDateTime',

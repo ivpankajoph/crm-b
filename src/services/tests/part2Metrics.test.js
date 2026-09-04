@@ -5,7 +5,7 @@ import Customer from '../../models/Customer.js';
 import Company from '../../models/Company.js';
 import LeadStatusHistory from '../../models/LeadStatusHistory.js';
 import { calculateDashboardMetricsAggregated } from '../dashboardMetricsService.js';
-import { buildLeadStatsMatch, calculateLeadStatsAggregated } from '../leadStatsService.js';
+import { buildLeadStatsMatch, calculateLeadStatsAggregated, calculateLeadStatsLegacy } from '../leadStatsService.js';
 import {
   getCacheMetrics,
   getCachedJsonMany,
@@ -137,6 +137,7 @@ test('company-only lead stats do not query customer records', { concurrency: fal
     assert.equal(stats.today.demoScheduled, 1);
     assert.equal(stats.today.followUp, 1);
     assert.deepEqual(companyPipeline[0], { $match: { assignedTo } });
+    assert.deepEqual(companyPipeline[1].$group.totalLeads, { $sum: 1 });
     const pipelineText = JSON.stringify(companyPipeline);
     assert.match(pipelineText, /\$scheduledDateTime/);
     assert.match(pipelineText, /\$followUpDateTime/);
@@ -146,6 +147,30 @@ test('company-only lead stats do not query customer records', { concurrency: fal
     Company.aggregate = originals.companyAggregate;
     Company.countDocuments = originals.companyCount;
     LeadStatusHistory.aggregate = originals.historyAggregate;
+  }
+});
+
+test('legacy company stats keep total leads independent of the selected period', { concurrency: false }, async () => {
+  const originalCompanyCount = Company.countDocuments;
+  const queries = [];
+  try {
+    Company.countDocuments = async (query) => {
+      queries.push(query);
+      return 1;
+    };
+
+    const assignedTo = new mongoose.Types.ObjectId();
+    const stats = await calculateLeadStatsLegacy(
+      { _id: assignedTo, role: 'employee' },
+      { period: 'today', type: 'Company' },
+      { assignedTo },
+    );
+
+    assert.equal(stats.totalLeads, 1);
+    assert.deepEqual(queries[0], { assignedTo });
+    assert.equal('createdAt' in queries[0], false);
+  } finally {
+    Company.countDocuments = originalCompanyCount;
   }
 });
 

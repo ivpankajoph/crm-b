@@ -2,8 +2,8 @@ import Company from '../models/Company.js';
 import Customer from '../models/Customer.js';
 import Event from '../models/Event.js';
 import User from '../models/User.js';
-import { isFeatureEnabled } from './cacheService.js';
-import { pagedData, paginationMeta, parsePagination } from './listQueryService.js';
+import mongoose from 'mongoose';
+import { escapeRegex, pagedData, paginationMeta, parsePagination } from './listQueryService.js';
 
 export const reportDateRange = (period, now = new Date()) => {
   if (!period || period === 'All') return null;
@@ -25,233 +25,210 @@ export const reportDateRange = (period, now = new Date()) => {
   return { $gte: start, $lte: end };
 };
 
-const leadMatch = ({ period, status, visibleUserIds }) => {
+const salesDateRange = ({ period, startDate, endDate }) => {
+  if (period !== 'Date Range') return reportDateRange(period);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate || '') || !/^\d{4}-\d{2}-\d{2}$/.test(endDate || '')) {
+    throw Object.assign(new Error('A valid start date and end date are required'), { statusCode: 400 });
+  }
+  const start = new Date(`${startDate}T00:00:00.000+05:30`);
+  const end = new Date(`${endDate}T23:59:59.999+05:30`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+    throw Object.assign(new Error('A valid start date and end date are required'), { statusCode: 400 });
+  }
+  return { $gte: start, $lte: end };
+};
+
+export const buildSalesReportMatch = ({ period, startDate, endDate, status, owner, source, search, visibleUserIds } = {}) => {
   const match = {};
-  const dateRange = reportDateRange(period);
+  const dateRange = salesDateRange({ period, startDate, endDate });
   if (dateRange) match.createdAt = dateRange;
   if (status && status !== 'All') match.leadStatus = status;
+  if (source && source !== 'All') match.leadSource = source;
+  if (owner && owner !== 'All') {
+    if (!mongoose.isValidObjectId(owner)) throw Object.assign(new Error('Invalid sales owner'), { statusCode: 400 });
+    match.assignedTo = new mongoose.Types.ObjectId(owner);
+  }
+  if (search) {
+    const value = new RegExp(escapeRegex(String(search).trim().slice(0, 100)), 'i');
+    match.$and = [{ $or: [{ companyName: value }, { customerName: value }, { email1: value }, { mobileNo: value }] }];
+  }
   if (Array.isArray(visibleUserIds)) {
-    match.$or = [
-      { createdBy: { $in: visibleUserIds } },
-      { assignedTo: { $in: visibleUserIds } },
-    ];
+    const visibility = { $or: [{ createdBy: { $in: visibleUserIds } }, { assignedTo: { $in: visibleUserIds } }] };
+    match.$and = [...(match.$and || []), visibility];
   }
   return match;
 };
 
-export const buildSalesReportPipeline = ({ period, status, visibleUserIds } = {}) => {
-  const match = leadMatch({ period, status, visibleUserIds });
+const dealValueExpression = {
+  $switch: {
+    branches: [
+      { case: { $eq: ['$leadStatus', 'Converted'] }, then: { $ifNull: ['$statusDetails.finalDealValue', 0] } },
+      { case: { $eq: ['$leadStatus', 'Committed'] }, then: { $ifNull: ['$statusDetails.dealValue', 0] } },
+    ],
+    default: { $ifNull: ['$statusDetails.estimatedDealValue', 0] },
+  },
+};
+
+export const buildSalesReportPipeline = (filters = {}) => {
+  const match = buildSalesReportMatch(filters);
   return [
     { $match: match },
+    { $lookup: { from: User.collection.name, localField: 'assignedTo', foreignField: '_id', as: 'ownerUsers' } },
+    { $lookup: { from: User.collection.name, localField: 'createdBy', foreignField: '_id', as: 'creatorUsers' } },
     {
       $project: {
         _id: 0,
         id: '$_id',
-        name: '$name',
-        company: { $literal: 'N/A' },
+        company: '$companyName',
+        contact: { $ifNull: ['$customerName', '—'] },
         status: { $ifNull: ['$leadStatus', 'New'] },
+        source: { $ifNull: ['$leadSource', 'Direct'] },
+        owner: { $ifNull: [{ $arrayElemAt: ['$ownerUsers.name', 0] }, { $ifNull: [{ $arrayElemAt: ['$creatorUsers.name', 0] }, 'System'] }] },
+        ownerId: { $arrayElemAt: ['$assignedTo', 0] },
+        dealValue: dealValueExpression,
+        expectedClosingDate: { $ifNull: ['$statusDetails.expectedClosingDate', '$statusDetails.expectedCompletionDate'] },
+        convertedAt: '$statusDetails.convertedAt',
+        lastActivityAt: { $ifNull: ['$leadStatusChangedAt', '$updatedAt'] },
         createdAt: 1,
-        updatedAt: 1,
-        createdById: '$createdBy',
-      },
-    },
-    {
-      $unionWith: {
-        coll: Company.collection.name,
-        pipeline: [
-          { $match: match },
-          {
-            $project: {
-              _id: 0,
-              id: '$_id',
-              name: { $ifNull: ['$customerName', '$companyName'] },
-              company: '$companyName',
-              status: { $ifNull: ['$leadStatus', 'New'] },
-              createdAt: 1,
-              updatedAt: 1,
-              createdById: '$createdBy',
-            },
-          },
-        ],
-      },
-    },
-    {
-      $lookup: {
-        from: User.collection.name,
-        localField: 'createdById',
-        foreignField: '_id',
-        pipeline: [{ $project: { _id: 0, name: 1 } }],
-        as: 'ownerUser',
-      },
-    },
-    {
-      $project: {
-        id: 1,
-        name: 1,
-        company: 1,
-        status: 1,
-        createdAt: 1,
-        updatedAt: 1,
-        owner: { $ifNull: [{ $arrayElemAt: ['$ownerUser.name', 0] }, 'System'] },
       },
     },
   ];
-};
-
-export const buildMarketingReportPipeline = ({ period, visibleUserIds } = {}) => {
-  const match = leadMatch({ period, visibleUserIds });
-  return [
-    { $match: match },
-    {
-      $project: {
-        _id: 0,
-        id: '$_id',
-        leadName: '$name',
-        source: { $literal: 'Organic/Unknown' },
-        status: { $ifNull: ['$leadStatus', 'New'] },
-        isConverted: { $eq: ['$leadStatus', 'Converted'] },
-        dateAcquired: '$createdAt',
-      },
-    },
-    {
-      $unionWith: {
-        coll: Company.collection.name,
-        pipeline: [
-          { $match: match },
-          {
-            $project: {
-              _id: 0,
-              id: '$_id',
-              leadName: '$companyName',
-              source: { $literal: 'Organic/Unknown' },
-              status: { $ifNull: ['$leadStatus', 'New'] },
-              isConverted: { $eq: ['$leadStatus', 'Converted'] },
-              dateAcquired: '$createdAt',
-            },
-          },
-        ],
-      },
-    },
-  ];
-};
-
-const runOptionalPage = async ({ Model, pipeline, sort, query }) => {
-  const paginationRequested = query.page !== undefined || query.limit !== undefined;
-  if (!paginationRequested) return Model.aggregate([...pipeline, { $sort: sort }]);
-
-  const { page, limit, skip } = parsePagination(query);
-  const [result] = await Model.aggregate([
-    ...pipeline,
-    {
-      $facet: {
-        items: [{ $sort: sort }, { $skip: skip }, { $limit: limit }],
-        total: [{ $count: 'count' }],
-      },
-    },
-  ]);
-  const total = result?.total?.[0]?.count || 0;
-  return pagedData(result?.items || [], paginationMeta({ page, limit, total }));
-};
-
-const getSalesReportFallback = async ({ period, status, visibleUserIds, query }) => {
-  const match = leadMatch({ period, status, visibleUserIds });
-  const [customers, companies] = await Promise.all([
-    Customer.find(match)
-      .select('name leadStatus createdAt updatedAt createdBy')
-      .populate('createdBy', 'name')
-      .lean(),
-    Company.find(match)
-      .select('customerName companyName leadStatus createdAt updatedAt createdBy')
-      .populate('createdBy', 'name')
-      .lean(),
-  ]);
-  const rows = [
-    ...customers.map((item) => ({
-      id: item._id,
-      name: item.name,
-      company: 'N/A',
-      status: item.leadStatus || 'New',
-      createdAt: item.createdAt,
-      updatedAt: item.updatedAt,
-      owner: item.createdBy?.name || 'System',
-    })),
-    ...companies.map((item) => ({
-      id: item._id,
-      name: item.customerName || item.companyName,
-      company: item.companyName,
-      status: item.leadStatus || 'New',
-      createdAt: item.createdAt,
-      updatedAt: item.updatedAt,
-      owner: item.createdBy?.name || 'System',
-    })),
-  ].sort((a, b) => b.createdAt - a.createdAt);
-  if (query.page === undefined && query.limit === undefined) return rows;
-  const { page, limit, skip } = parsePagination(query);
-  return pagedData(rows.slice(skip, skip + limit), paginationMeta({ page, limit, total: rows.length }));
 };
 
 export const getSalesReportData = async (query = {}) => {
   const options = {
     period: query.period,
+    startDate: query.startDate,
+    endDate: query.endDate,
     status: query.status,
+    owner: query.owner,
+    source: query.source,
+    search: query.search,
     visibleUserIds: query._visibleUserIds,
   };
-  if (!isFeatureEnabled('REPORT_AGGREGATIONS_V2', true)) {
-    return getSalesReportFallback({ ...options, query });
-  }
-  return runOptionalPage({
-    Model: Customer,
-    pipeline: buildSalesReportPipeline(options),
-    sort: { createdAt: -1, id: -1 },
-    query,
-  });
-};
-
-const getMarketingReportFallback = async (query) => {
-  const match = leadMatch({
-    period: query.period,
-    visibleUserIds: query._visibleUserIds,
-  });
-  const [customers, companies] = await Promise.all([
-    Customer.find(match).select('name leadStatus createdAt').lean(),
-    Company.find(match).select('companyName leadStatus createdAt').lean(),
-  ]);
-  const rows = [
-    ...customers.map((item) => ({
-      id: item._id,
-      leadName: item.name,
-      source: 'Organic/Unknown',
-      status: item.leadStatus || 'New',
-      isConverted: item.leadStatus === 'Converted',
-      dateAcquired: item.createdAt,
-    })),
-    ...companies.map((item) => ({
-      id: item._id,
-      leadName: item.companyName,
-      source: 'Organic/Unknown',
-      status: item.leadStatus || 'New',
-      isConverted: item.leadStatus === 'Converted',
-      dateAcquired: item.createdAt,
-    })),
-  ].sort((a, b) => b.dateAcquired - a.dateAcquired);
-  if (query.page === undefined && query.limit === undefined) return rows;
+  const match = buildSalesReportMatch(options);
+  const visibilityMatch = buildSalesReportMatch({ visibleUserIds: query._visibleUserIds });
   const { page, limit, skip } = parsePagination(query);
-  return pagedData(rows.slice(skip, skip + limit), paginationMeta({ page, limit, total: rows.length }));
+  const dateFormat = query.period === 'All' ? '%Y-%m' : '%Y-%m-%d';
+  const [pageResult, metricRows, pipelineRows, trendRows, ownerRows, sourceRows] = await Promise.all([
+    Company.aggregate([
+      ...buildSalesReportPipeline(options),
+      { $sort: { createdAt: -1, id: -1 } },
+      { $facet: { items: [{ $skip: skip }, { $limit: limit }], total: [{ $count: 'count' }] } },
+    ]),
+    Company.aggregate([
+      { $match: match },
+      { $group: {
+        _id: null,
+        newLeads: { $sum: 1 },
+        activeDeals: { $sum: { $cond: [{ $not: [{ $in: ['$leadStatus', ['Converted', 'Not Interested']] }] }, 1, 0] } },
+        pipelineValue: { $sum: { $cond: [{ $in: ['$leadStatus', ['Prospective', 'Committed']] }, dealValueExpression, 0] } },
+        convertedCustomers: { $sum: { $cond: [{ $eq: ['$leadStatus', 'Converted'] }, 1, 0] } },
+        wonRevenue: { $sum: { $cond: [{ $eq: ['$leadStatus', 'Converted'] }, { $ifNull: ['$statusDetails.finalDealValue', 0] }, 0] } },
+      } },
+    ]),
+    Company.aggregate([{ $match: match }, { $group: { _id: { $ifNull: ['$leadStatus', 'New'] }, count: { $sum: 1 } } }]),
+    Company.aggregate([
+      { $match: match },
+      { $group: {
+        _id: { $dateToString: { format: dateFormat, date: '$createdAt', timezone: 'Asia/Kolkata' } },
+        newLeads: { $sum: 1 },
+        converted: { $sum: { $cond: [{ $eq: ['$leadStatus', 'Converted'] }, 1, 0] } },
+        revenue: { $sum: { $cond: [{ $eq: ['$leadStatus', 'Converted'] }, { $ifNull: ['$statusDetails.finalDealValue', 0] }, 0] } },
+      } },
+      { $sort: { _id: 1 } },
+    ]),
+    Company.aggregate([
+      { $match: visibilityMatch }, { $unwind: '$assignedTo' },
+      { $group: { _id: '$assignedTo' } },
+      { $lookup: { from: User.collection.name, localField: '_id', foreignField: '_id', as: 'user' } },
+      { $project: { _id: 0, id: '$_id', name: { $arrayElemAt: ['$user.name', 0] } } },
+      { $sort: { name: 1 } },
+    ]),
+    Company.aggregate([
+      { $match: visibilityMatch },
+      { $group: { _id: { $ifNull: ['$leadSource', 'Direct'] }, count: { $sum: 1 } } },
+      { $sort: { _id: 1 } },
+    ]),
+  ]);
+  const result = pageResult[0] || { items: [], total: [] };
+  const total = result.total?.[0]?.count || 0;
+  const metrics = metricRows[0] || { newLeads: 0, activeDeals: 0, pipelineValue: 0, convertedCustomers: 0, wonRevenue: 0 };
+  metrics.conversionRate = metrics.newLeads ? Number(((metrics.convertedCustomers / metrics.newLeads) * 100).toFixed(1)) : 0;
+  metrics.averageDealValue = metrics.convertedCustomers ? Math.round(metrics.wonRevenue / metrics.convertedCustomers) : 0;
+  const pipelineMap = new Map(pipelineRows.map((row) => [row._id, row.count]));
+  const statuses = ['New', 'Follow Up', 'Interested', 'Demo Scheduled', 'Prospective', 'Committed', 'Converted', 'Not Interested'];
+  return {
+    items: result.items || [],
+    pagination: paginationMeta({ page, limit, total }),
+    metrics,
+    charts: {
+      pipeline: statuses.map((status) => ({ status, count: pipelineMap.get(status) || 0 })),
+      trend: trendRows.map((row) => ({ period: row._id, newLeads: row.newLeads, converted: row.converted, revenue: row.revenue })),
+    },
+    facets: { owners: ownerRows.filter((row) => row.name), sources: sourceRows.map((row) => row._id) },
+  };
 };
 
-export const getMarketingReportData = async (query = {}) => {
-  if (!isFeatureEnabled('REPORT_AGGREGATIONS_V2', true)) {
-    return getMarketingReportFallback(query);
-  }
-  return runOptionalPage({
-    Model: Customer,
-    pipeline: buildMarketingReportPipeline({
-      period: query.period,
-      visibleUserIds: query._visibleUserIds,
-    }),
-    sort: { dateAcquired: -1, id: -1 },
-    query,
-  });
+export const buildSalesPerformancePipeline = (query = {}) => {
+  const options = {
+    period: query.period,
+    startDate: query.startDate,
+    endDate: query.endDate,
+    status: query.status,
+    owner: query.owner,
+    source: query.source,
+    search: query.search,
+    visibleUserIds: query._visibleUserIds,
+  };
+  const match = buildSalesReportMatch(options);
+  const { limit, skip } = parsePagination(query);
+  const topLimit = Number.parseInt(query.topLimit, 10) === 20 ? 20 : 10;
+  const performanceSearch = String(query.performanceSearch || '').trim().slice(0, 100);
+  const leaderboardSearch = performanceSearch
+    ? [{ $match: { owner: new RegExp(escapeRegex(performanceSearch), 'i') } }]
+    : [];
+  const sort = { converted: -1, revenue: -1, assigned: -1, owner: 1 };
+  return [
+    { $match: match },
+    { $group: {
+      _id: { $ifNull: [{ $arrayElemAt: ['$assignedTo', 0] }, '$createdBy'] },
+      assigned: { $sum: 1 },
+      activeDeals: { $sum: { $cond: [{ $not: [{ $in: ['$leadStatus', ['Converted', 'Not Interested']] }] }, 1, 0] } },
+      converted: { $sum: { $cond: [{ $eq: ['$leadStatus', 'Converted'] }, 1, 0] } },
+      revenue: { $sum: { $cond: [{ $eq: ['$leadStatus', 'Converted'] }, { $ifNull: ['$statusDetails.finalDealValue', 0] }, 0] } },
+    } },
+    { $lookup: { from: User.collection.name, localField: '_id', foreignField: '_id', as: 'user' } },
+    { $project: {
+      _id: 0,
+      ownerId: '$_id',
+      owner: { $ifNull: [{ $arrayElemAt: ['$user.name', 0] }, 'System'] },
+      assigned: 1,
+      activeDeals: 1,
+      converted: 1,
+      revenue: 1,
+      conversionRate: {
+        $cond: [{ $gt: ['$assigned', 0] }, { $round: [{ $multiply: [{ $divide: ['$converted', '$assigned'] }, 100] }, 1] }, 0],
+      },
+    } },
+    { $facet: {
+      chart: [{ $sort: sort }, { $limit: topLimit }],
+      items: [...leaderboardSearch, { $sort: sort }, { $skip: skip }, { $limit: limit }],
+      total: [...leaderboardSearch, { $count: 'count' }],
+    } },
+  ];
+};
+
+export const getSalesPerformanceData = async (query = {}) => {
+  const { page, limit } = parsePagination(query);
+  const rows = await Company.aggregate(buildSalesPerformancePipeline(query));
+  const result = rows[0] || { chart: [], items: [], total: [] };
+  const total = result.total?.[0]?.count || 0;
+  return {
+    chart: result.chart || [],
+    items: result.items || [],
+    pagination: paginationMeta({ page, limit, total }),
+  };
 };
 
 const countsByUser = (rows) => new Map(rows.map((row) => [String(row._id), row.count]));

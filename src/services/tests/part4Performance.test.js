@@ -4,7 +4,7 @@ import http from 'node:http';
 import express from 'express';
 import compression from 'compression';
 import {
-  buildMarketingReportPipeline,
+  buildSalesPerformancePipeline,
   buildSalesReportPipeline,
   mergeUserReportRows,
   reportDateRange,
@@ -31,19 +31,25 @@ test('report periods produce inclusive deterministic date ranges', () => {
   assert.equal(reportDateRange('All', now), null);
 });
 
-test('sales and marketing pipelines preserve report fields and database-side union/filtering', () => {
+test('sales pipeline is company-only and preserves enhanced report fields', () => {
   const sales = buildSalesReportPipeline({ period: 'This Month', status: 'Converted' });
   assert.equal(sales[0].$match.leadStatus, 'Converted');
-  assert.ok(sales.some((stage) => stage.$unionWith));
+  assert.equal(sales.some((stage) => stage.$unionWith), false);
   const finalSalesProjection = sales.at(-1).$project;
   assert.deepEqual(Object.keys(finalSalesProjection).sort(), [
-    'company', 'createdAt', 'id', 'name', 'owner', 'status', 'updatedAt',
+    '_id', 'company', 'contact', 'convertedAt', 'createdAt', 'dealValue', 'expectedClosingDate',
+    'id', 'lastActivityAt', 'owner', 'ownerId', 'source', 'status',
   ]);
+});
 
-  const marketing = buildMarketingReportPipeline({ period: 'Today' });
-  assert.ok(marketing.some((stage) => stage.$unionWith));
-  assert.equal(JSON.stringify(marketing).includes('comments'), false);
-  assert.equal(JSON.stringify(marketing).includes('messageNotes'), false);
+test('employee performance uses one top-level facet with independently paged results', () => {
+  const pipeline = buildSalesPerformancePipeline({ page: 2, limit: 25, topLimit: 20, performanceSearch: 'rahul' });
+  const facet = pipeline.at(-1).$facet;
+  assert.deepEqual(Object.keys(facet).sort(), ['chart', 'items', 'total']);
+  assert.equal(facet.chart.at(-1).$limit, 20);
+  assert.equal(facet.items.some((stage) => stage.$facet), false);
+  assert.equal(facet.total.some((stage) => stage.$facet), false);
+  assert.equal(facet.items.find((stage) => stage.$skip)?.$skip, 25);
 });
 
 test('grouped user counts preserve per-user report output without N+1 reads', () => {
@@ -125,7 +131,9 @@ test('Part 4 model indexes are declared without removing prior indexes', () => {
 test('full CSV exports remain registered and spreadsheet formulas are neutralized', () => {
   const paths = reportRoutes.stack.filter((layer) => layer.route).map((layer) => layer.route.path);
   assert.ok(paths.includes('/sales/export'));
-  assert.ok(paths.includes('/marketing/export'));
+  assert.ok(paths.includes('/sales/performance'));
+  assert.equal(paths.includes('/marketing/export'), false);
+  assert.equal(paths.includes('/marketing'), false);
   assert.ok(paths.includes('/users/export'));
   assert.ok(paths.includes('/meetings/export'));
   assert.equal(encodeCsvValue('=HYPERLINK("bad")'), `"'=HYPERLINK(""bad"")"`);

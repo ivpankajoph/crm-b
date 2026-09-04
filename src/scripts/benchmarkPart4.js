@@ -8,7 +8,6 @@ const iterations = Math.min(Math.max(Number(process.env.BENCHMARK_ITERATIONS || 
 const endpoints = String(process.env.BENCHMARK_ENDPOINTS || [
   '/api/reports/dashboard',
   '/api/reports/sales?page=1&limit=50',
-  '/api/reports/marketing?page=1&limit=50',
   '/api/reports/users?page=1&limit=50',
   '/api/reports/meetings?page=1&limit=50',
   '/api/notifications/paged?page=1&limit=25',
