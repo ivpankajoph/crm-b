@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import CallLog from '../models/CallLog.js';
 import Setting from '../models/Setting.js';
 import User from '../models/User.js';
+import Notification from '../models/Notification.js';
 import { errorResponse, successResponse } from '../utils/response.js';
 import { normalizePhone, plivoRequest } from '../services/plivoService.js';
 import { resolveUserDataScope, ownershipFilter } from '../services/dataScopeService.js';
@@ -13,11 +14,40 @@ import {
 } from '../services/geminiCallTranscriptionService.js';
 import { effectiveCallingPool, normalizeCallingPool } from '../services/callingNumberPoolService.js';
 import { logActivity } from '../utils/activity.js';
+import { findCallbackRoute } from '../services/callbackRoutingService.js';
+import { emitToUsers } from '../services/realtimeService.js';
 
 const publicBaseUrl = () => (process.env.PUBLIC_API_URL || '').trim().replace(/\/$/, '');
 const xmlEscape = (value) => String(value).replace(/[<>&"']/g, (char) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[char]));
 const exchangeRateCache = new Map();
 const providerStatusCheckCache = new Map();
+const missedCallbackMessage = (callLog) => {
+  if (callLog.routeStatus === 'busy') return `A customer called back on ${callLog.virtualNumber}, but you were already on another call.`;
+  if (callLog.routeStatus === 'offline') return `A customer called back on ${callLog.virtualNumber} while your CRM phone was unavailable.`;
+  return `You missed an incoming customer callback from ${callLog.customerNumber || callLog.fromNumber}.`;
+};
+
+const notifyMissedCallback = async (callLog) => {
+  if (callLog.direction !== 'inbound' || !callLog.calledBy || callLog.missedNotificationSentAt) return;
+  const claimed = await CallLog.findOneAndUpdate(
+    { _id: callLog._id, missedNotificationSentAt: null },
+    { $set: { missedNotificationSentAt: new Date() } },
+    { new: true },
+  );
+  if (!claimed) return;
+  try {
+    const notification = await Notification.create({
+      user: claimed.calledBy,
+      title: 'Missed customer callback',
+      message: missedCallbackMessage(claimed),
+      type: 'warning',
+    });
+    emitToUsers([claimed.calledBy], 'notification:new', notification.toObject());
+  } catch (error) {
+    await CallLog.updateOne({ _id: claimed._id }, { $unset: { missedNotificationSentAt: 1 } });
+    throw error;
+  }
+};
 
 const getOwnedPlivoNumbers = async () => {
   const numbers = [];
@@ -50,11 +80,17 @@ export const getTelephonyConfig = async (_req, res, next) => {
     const settings = await Setting.findOne();
     const numbers = await getOwnedPlivoNumbers();
     const activeNumbers = effectiveCallingPool(settings);
+    const inboundApplicationId = settings?.plivoInboundApplicationId || '';
+    const inboundReadyNumbers = numbers
+      .filter((item) => inboundApplicationId && String(item.application || '').includes(inboundApplicationId))
+      .map((item) => normalizePhone(item.number))
+      .filter(Boolean);
     return successResponse(res, 200, 'Plivo numbers fetched', {
       configured: true,
       selectedNumber: settings?.plivoNumber || '',
       activeNumbers,
       poolConfigured: settings?.callingPoolConfigured === true,
+      inboundReadyNumbers,
       numbers,
     });
   } catch (error) { next(error); }
@@ -164,6 +200,10 @@ export const updateActiveCallingPool = async (req, res, next) => {
     return successResponse(res, 200, 'Active calling pool updated', {
       activeNumbers: numbers,
       poolConfigured: true,
+      inboundReadyNumbers: owned
+        .filter((item) => settings.plivoInboundApplicationId && String(item.application || '').includes(settings.plivoInboundApplicationId))
+        .map((item) => normalizePhone(item.number))
+        .filter((number) => number && numbers.includes(number)),
     });
   } catch (error) { next(error); }
 };
@@ -175,13 +215,15 @@ export const answerClickToCall = async (req, res) => {
   callLog.providerCallId = req.body.CallUUID || req.query.CallUUID || callLog.providerCallId;
   await callLog.save();
   const callback = `${publicBaseUrl()}/api/telephony/webhooks/hangup/${callLog._id}/${callLog.webhookToken}`;
-  return res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Speak>Please wait while we connect your call.</Speak><Dial callerId="${xmlEscape(callLog.fromNumber)}" callbackUrl="${xmlEscape(callback)}" callbackMethod="POST"><Number>${xmlEscape(callLog.toNumber)}</Number></Dial></Response>`);
+  const recordingCallbackUrl = `${publicBaseUrl()}/api/telephony/webhooks/recording/${callLog._id}/${callLog.webhookToken}`;
+  return res.type('application/xml').send(`<?xml version="1.0" encoding="UTF-8"?><Response><Speak>Please wait while we connect your call. This call may be recorded.</Speak><Record startOnDialAnswer="true" redirect="false" fileFormat="mp3" recordChannelType="stereo" maxLength="14400" callbackUrl="${xmlEscape(recordingCallbackUrl)}" callbackMethod="POST"/><Dial callerId="${xmlEscape(callLog.fromNumber)}" action="${xmlEscape(callback)}" method="POST" redirect="false" callbackUrl="${xmlEscape(callback)}" callbackMethod="POST"><Number>${xmlEscape(callLog.toNumber)}</Number></Dial></Response>`);
 };
 
 export const hangupClickToCall = async (req, res) => {
   const callLog = await CallLog.findOne({ _id: req.params.callLogId, webhookToken: req.params.token }).select('+webhookToken');
   if (!callLog) return res.sendStatus(404);
   if (['completed', 'failed', 'cancelled'].includes(callLog.status)) {
+    if (callLog.status === 'failed') await notifyMissedCallback(callLog).catch(() => undefined);
     return res.type('application/xml').send('<Response/>');
   }
   const dialAction = String(req.body.DialAction || '').toLowerCase();
@@ -205,10 +247,34 @@ export const hangupClickToCall = async (req, res) => {
     callLog.endedAt = new Date();
   }
   callLog.hangupCause = hangupCause;
+  callLog.providerLegId = req.body.DialBLegUUID || callLog.providerLegId;
   callLog.hangupCauseCode = String(req.body.DialBLegHangupCauseCode || req.body.HangupCauseCode || req.body.DialHangupCauseCode || '');
+  if (callLog.direction === 'inbound' && callLog.status === 'failed' && normalizedCause.includes('busy')) {
+    callLog.routeStatus = 'busy';
+  }
   if (['completed', 'failed'].includes(callLog.status)) callLog.endedAt = callLog.endedAt || new Date();
   await callLog.save();
+  if (callLog.status === 'failed') await notifyMissedCallback(callLog).catch(() => undefined);
   return res.type('application/xml').send('<Response/>');
+};
+
+export const configureInboundCallbacks = async (req, res, next) => {
+  try {
+    const settings = (await Setting.findOne()) || new Setting();
+    const numbers = effectiveCallingPool(settings);
+    if (!numbers.length) return errorResponse(res, 409, 'Activate at least one calling number first');
+    settings.plivoInboundApplicationId = await attachInboundApplicationToNumbers(numbers);
+    await settings.save();
+    await logActivity({
+      user: req.user._id,
+      actionType: 'inbound_callbacks_configured',
+      description: `Enabled strict customer callbacks on ${numbers.length} calling number${numbers.length === 1 ? '' : 's'}`,
+      entityType: 'Setting',
+      entityId: settings._id,
+      metadata: { activeNumbers: numbers, applicationId: settings.plivoInboundApplicationId },
+    });
+    return successResponse(res, 200, 'Incoming callbacks enabled', { inboundReadyNumbers: numbers });
+  } catch (error) { next(error); }
 };
 
 const encryptEndpointPassword = (password) => {
@@ -245,6 +311,45 @@ const ensureBrowserApplication = async () => {
   return settings.plivoApplicationId;
 };
 
+const ensureInboundApplication = async () => {
+  const baseUrl = publicBaseUrl();
+  if (!baseUrl?.startsWith('https://')) throw new Error('PUBLIC_API_URL must be a public HTTPS URL');
+  const settings = (await Setting.findOne()) || new Setting();
+  const applicationPayload = {
+    answer_url: `${baseUrl}/api/telephony/webhooks/incoming`,
+    answer_method: 'POST',
+    hangup_url: `${baseUrl}/api/telephony/webhooks/incoming-hangup`,
+    hangup_method: 'POST',
+  };
+  if (settings.plivoInboundApplicationId) {
+    await plivoRequest(`/Application/${settings.plivoInboundApplicationId}/`, {
+      method: 'POST',
+      body: JSON.stringify(applicationPayload),
+    });
+    return settings.plivoInboundApplicationId;
+  }
+  const response = await plivoRequest('/Application/', {
+    method: 'POST',
+    body: JSON.stringify({
+      app_name: `CRM_Strict_Callbacks_${Date.now()}`,
+      ...applicationPayload,
+    }),
+  });
+  settings.plivoInboundApplicationId = response.app_id || response.appId;
+  await settings.save();
+  return settings.plivoInboundApplicationId;
+};
+
+const attachInboundApplicationToNumbers = async (numbers) => {
+  if (!numbers.length) return '';
+  const appId = await ensureInboundApplication();
+  await Promise.all(numbers.map((number) => plivoRequest(`/Number/${encodeURIComponent(number.replace(/^\+/, ''))}/`, {
+    method: 'POST',
+    body: JSON.stringify({ app_id: appId }),
+  })));
+  return appId;
+};
+
 const ensureBrowserEndpoint = async (user) => {
   const endpointUser = await User.findById(user._id).select('+plivoEndpointId +plivoEndpointUsername +plivoEndpointPassword');
   if (!endpointUser) throw new Error('Authenticated user was not found');
@@ -265,6 +370,38 @@ const ensureBrowserEndpoint = async (user) => {
   return { username: response.username, password };
 };
 
+const getRegisteredEndpoint = async (employeeId) => {
+  const user = await User.findOne({ _id: employeeId, isActive: true, status: { $ne: 'inactive' } })
+    .select('+plivoEndpointId +plivoEndpointUsername');
+  if (!user?.plivoEndpointId || !user.plivoEndpointUsername) return null;
+  try {
+    const endpoint = await plivoRequest(`/Endpoint/${user.plivoEndpointId}/`);
+    const registered = endpoint.sip_registered === true || String(endpoint.sip_registered).toLowerCase() === 'true';
+    return registered ? { username: user.plivoEndpointUsername } : null;
+  } catch {
+    return null;
+  }
+};
+
+const callbackDestinationIsBusy = async ({ employeeId, virtualNumber }) => {
+  const recent = new Date(Date.now() - (6 * 60 * 60 * 1000));
+  const recentlyQueued = new Date(Date.now() - (10 * 60 * 1000));
+  return Boolean(await CallLog.exists({
+    endedAt: null,
+    $and: [
+      { $or: [
+        { calledBy: employeeId },
+        { virtualNumber },
+        { direction: { $ne: 'inbound' }, virtualNumber: { $exists: false }, fromNumber: virtualNumber },
+      ] },
+      { $or: [
+        { status: { $in: ['ringing', 'in-progress'] }, callDatetime: { $gte: recent } },
+        { status: 'queued', callDatetime: { $gte: recentlyQueued } },
+      ] },
+    ],
+  }));
+};
+
 export const prepareBrowserCall = async ({ callLog, user }) => {
   const endpoint = await ensureBrowserEndpoint(user);
   const dialCode = Array.from(crypto.randomBytes(15), (byte) => byte % 10).join('');
@@ -273,6 +410,136 @@ export const prepareBrowserCall = async ({ callLog, user }) => {
   callLog.webhookToken = crypto.randomBytes(24).toString('hex');
   await callLog.save();
   return { ...endpoint, dialCode };
+};
+
+export const getBrowserSession = async (req, res, next) => {
+  try {
+    const endpoint = await ensureBrowserEndpoint(req.user);
+    return successResponse(res, 200, 'Browser phone session prepared', endpoint);
+  } catch (error) { next(error); }
+};
+
+const inboundCallXml = ({ callLog, endpointUsername }) => {
+  const callback = `${publicBaseUrl()}/api/telephony/webhooks/hangup/${callLog._id}/${callLog.webhookToken}`;
+  const recordingCallbackUrl = `${publicBaseUrl()}/api/telephony/webhooks/recording/${callLog._id}/${callLog.webhookToken}`;
+  const sipTarget = endpointUsername.includes('@') ? endpointUsername : `${endpointUsername}@phone.plivo.com`;
+  return `<?xml version="1.0" encoding="UTF-8"?><Response><Speak>This call may be recorded. Please wait while we connect you.</Speak><Record startOnDialAnswer="true" redirect="false" fileFormat="mp3" recordChannelType="stereo" maxLength="14400" callbackUrl="${xmlEscape(recordingCallbackUrl)}" callbackMethod="POST"/><Dial callerId="${xmlEscape(callLog.customerNumber)}" callerName="CRM customer callback" timeout="30" action="${xmlEscape(callback)}" method="POST" redirect="false" callbackUrl="${xmlEscape(callback)}" callbackMethod="POST"><User sipHeaders="X-PH-CRMCallLogId=${callLog._id}">sip:${xmlEscape(sipTarget)}</User></Dial><Speak>The employee is busy or unavailable. Please try again later.</Speak></Response>`;
+};
+
+const unavailableInboundXml = (message = 'The employee is busy or unavailable. Please try again later.') => (
+  `<?xml version="1.0" encoding="UTF-8"?><Response><Speak>${xmlEscape(message)}</Speak><Hangup/></Response>`
+);
+
+export const answerIncomingCallback = async (req, res) => {
+  const customerNumber = normalizePhone(req.body.From || req.query.From);
+  const virtualNumber = normalizePhone(req.body.To || req.query.To);
+  const providerCallId = String(req.body.CallUUID || req.query.CallUUID || '').trim();
+  if (!customerNumber || !virtualNumber || !providerCallId) {
+    return res.status(400).type('application/xml').send(unavailableInboundXml('This call could not be identified.'));
+  }
+
+  const route = await findCallbackRoute({ customerNumber, virtualNumber });
+  if (!route) {
+    await CallLog.findOneAndUpdate(
+      { direction: 'inbound', providerCallId },
+      {
+        $setOnInsert: {
+          direction: 'inbound', routeStatus: 'no-route', status: 'failed', providerCallId,
+          fromNumber: customerNumber, toNumber: virtualNumber, customerNumber, virtualNumber,
+          callDatetime: new Date(), endedAt: new Date(), hangupCause: 'No callback route',
+          recordingStatus: 'failed', transcriptionStatus: 'failed',
+          transcriptionError: 'Call was not routed, so no recording was created',
+        },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true },
+    );
+    return res.type('application/xml').send(unavailableInboundXml('No callback route was found for this number.'));
+  }
+
+  let callLog = await CallLog.findOne({ direction: 'inbound', providerCallId }).select('+webhookToken');
+  if (callLog?.routeStatus === 'routed') {
+    const endpoint = await getRegisteredEndpoint(callLog.calledBy);
+    if (endpoint) return res.type('application/xml').send(inboundCallXml({ callLog, endpointUsername: endpoint.username }));
+  }
+  if (callLog) return res.type('application/xml').send(unavailableInboundXml());
+
+  let routeStatus = 'routed';
+  let endpoint = null;
+  if (await callbackDestinationIsBusy({ employeeId: route.employee, virtualNumber })) {
+    routeStatus = 'busy';
+  } else {
+    endpoint = await getRegisteredEndpoint(route.employee);
+    if (!endpoint) routeStatus = 'offline';
+  }
+
+  callLog = await CallLog.findOneAndUpdate(
+    { direction: 'inbound', providerCallId },
+    { $setOnInsert: {
+      lead: route.lead,
+      leadModel: route.leadModel,
+      calledBy: route.employee,
+      direction: 'inbound',
+      routeStatus,
+      status: routeStatus === 'routed' ? 'ringing' : 'failed',
+      providerCallId,
+      fromNumber: customerNumber,
+      toNumber: virtualNumber,
+      customerNumber,
+      virtualNumber,
+      webhookToken: crypto.randomBytes(24).toString('hex'),
+      callDatetime: new Date(),
+      endedAt: routeStatus === 'routed' ? undefined : new Date(),
+      hangupCause: routeStatus === 'busy' ? 'Employee busy' : routeStatus === 'offline' ? 'Employee offline' : undefined,
+      recordingStatus: routeStatus === 'routed' ? 'pending' : 'failed',
+      transcriptionStatus: routeStatus === 'routed' ? 'pending' : 'failed',
+      transcriptionError: routeStatus === 'routed' ? '' : 'Call was not answered, so no recording was created',
+    } },
+    { upsert: true, new: true, setDefaultsOnInsert: true },
+  ).select('+webhookToken');
+
+  if (routeStatus !== 'routed') {
+    await notifyMissedCallback(callLog).catch(() => undefined);
+    return res.type('application/xml').send(unavailableInboundXml());
+  }
+
+  emitToUsers([route.employee], 'telephony:incoming', {
+    callLogId: String(callLog._id),
+    customerNumber,
+    lead: String(route.lead),
+    leadModel: route.leadModel,
+  });
+  return res.type('application/xml').send(inboundCallXml({ callLog, endpointUsername: endpoint.username }));
+};
+
+export const incomingCallHangup = async (req, res) => {
+  const providerCallId = String(req.body.CallUUID || req.query.CallUUID || '').trim();
+  if (!providerCallId) return res.sendStatus(204);
+  const callLog = await CallLog.findOne({ direction: 'inbound', providerCallId });
+  if (!callLog) return res.sendStatus(204);
+  const duration = Number(req.body.BillDuration || req.body.Duration || 0);
+  callLog.durationSeconds = Math.max(callLog.durationSeconds || 0, duration);
+  callLog.hangupCause = req.body.HangupCauseName || callLog.hangupCause;
+  callLog.hangupCauseCode = String(req.body.HangupCauseCode || callLog.hangupCauseCode || '');
+  callLog.endedAt = callLog.endedAt || new Date();
+  if (!['completed', 'failed'].includes(callLog.status)) {
+    callLog.status = callLog.answeredAt || duration > 0 ? 'completed' : 'failed';
+  }
+  await callLog.save();
+  if (callLog.status === 'failed') await notifyMissedCallback(callLog).catch(() => undefined);
+  return res.sendStatus(204);
+};
+
+export const getCurrentIncomingCall = async (req, res, next) => {
+  try {
+    const call = await CallLog.findOne({
+      direction: 'inbound',
+      calledBy: req.user._id,
+      status: 'ringing',
+      endedAt: null,
+      callDatetime: { $gte: new Date(Date.now() - (2 * 60 * 1000)) },
+    }).populate('lead', 'name companyName customerName').sort({ callDatetime: -1 }).lean();
+    return successResponse(res, 200, 'Current incoming call fetched', call);
+  } catch (error) { next(error); }
 };
 
 export const answerBrowserCall = async (req, res) => {
@@ -404,14 +671,18 @@ export const listCallLogs = async (req, res, next) => {
     const accessFilter = await callAccessFilter(req.user, req.access);
     const filter = { ...accessFilter };
     if (req.query.status && req.query.status !== 'all') filter.status = req.query.status;
+    if (req.query.direction === 'inbound') filter.direction = 'inbound';
+    if (req.query.direction === 'outbound') {
+      filter.$and = [...(filter.$and || []), { $or: [{ direction: 'outbound' }, { direction: { $exists: false } }] }];
+    }
     if (req.query.fromNumber && req.query.fromNumber !== 'all') {
       const fromNumber = normalizePhone(req.query.fromNumber);
       if (!fromNumber) return errorResponse(res, 400, 'Invalid calling number filter');
-      filter.fromNumber = fromNumber;
+      filter.$and = [...(filter.$and || []), { $or: [{ virtualNumber: fromNumber }, { virtualNumber: { $exists: false }, fromNumber }] }];
     }
-    const [calls, total, callingNumbers] = await Promise.all([
+    const [calls, total, virtualNumbers, legacyCallingNumbers] = await Promise.all([
       CallLog.find(filter)
-        .select('lead leadModel calledBy callDatetime durationSeconds fromNumber toNumber status recordingStatus transcriptionStatus hangupCause')
+        .select('lead leadModel calledBy callDatetime durationSeconds direction routeStatus fromNumber toNumber virtualNumber customerNumber status recordingStatus transcriptionStatus hangupCause')
         .populate('lead', 'name companyName customerName')
         .populate('calledBy', 'name email role')
         .sort({ callDatetime: -1 })
@@ -419,11 +690,12 @@ export const listCallLogs = async (req, res, next) => {
         .limit(limit)
         .lean(),
       CallLog.countDocuments(filter),
-      CallLog.distinct('fromNumber', accessFilter),
+      CallLog.distinct('virtualNumber', accessFilter),
+      CallLog.distinct('fromNumber', { ...accessFilter, direction: { $ne: 'inbound' } }),
     ]);
     return successResponse(res, 200, 'Call history fetched', {
       calls,
-      callingNumbers: callingNumbers.filter(Boolean).sort(),
+      callingNumbers: Array.from(new Set([...virtualNumbers, ...legacyCallingNumbers])).filter(Boolean).sort(),
       page,
       limit,
       total,

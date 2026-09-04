@@ -9,6 +9,7 @@ import {
   scheduleFollowUpReminder,
 } from '../services/followUpReminderService.js';
 import { sendAutomatedLeadStatusNotifications } from '../services/leadStatusNotificationService.js';
+import { invalidateLeadMetricsCaches } from '../services/cacheService.js';
 
 const ACTIVE_STATUSES = ['Pending', 'Snoozed'];
 
@@ -65,6 +66,7 @@ export const saveLeadFollowUp = async (req, res) => {
       }
       clearCompanyFollowUp(company);
       await company.save();
+      await invalidateLeadMetricsCaches();
       return res.json({ message: 'Follow-up cleared successfully', data: { followUp: null } });
     }
 
@@ -125,6 +127,7 @@ export const saveLeadFollowUp = async (req, res) => {
       actorUserId: req.user._id,
       trigger: 'follow_up_saved',
     });
+    await invalidateLeadMetricsCaches();
 
     return res.json({
       message: 'Follow-up saved successfully',
@@ -185,6 +188,7 @@ export const completeFollowUp = async (req, res) => {
       clearCompanyFollowUp(company);
       await company.save();
     }
+    await invalidateLeadMetricsCaches();
     return res.json({ message: 'Follow-up completed successfully', data: followUp });
   } catch (error) {
     console.error('Complete follow-up error:', error);

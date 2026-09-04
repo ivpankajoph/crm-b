@@ -4,18 +4,23 @@ const callLogSchema = new mongoose.Schema(
   {
     lead: {
       type: mongoose.Schema.Types.ObjectId,
-      required: true,
+      required() { return this.direction !== 'inbound' || !['no-route', 'invalid'].includes(this.routeStatus); },
       refPath: 'leadModel',
     },
     leadModel: {
       type: String,
-      required: true,
+      required() { return this.direction !== 'inbound' || !['no-route', 'invalid'].includes(this.routeStatus); },
       enum: ['Customer', 'Company', 'Lead'],
     },
     calledBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
+    },
+    direction: { type: String, enum: ['outbound', 'inbound'], default: 'outbound' },
+    routeStatus: {
+      type: String,
+      enum: ['not-applicable', 'routed', 'busy', 'offline', 'no-route', 'invalid'],
+      default: 'not-applicable',
     },
     callDatetime: {
       type: Date,
@@ -29,8 +34,11 @@ const callLogSchema = new mongoose.Schema(
       type: String,
       trim: true,
     },
+    providerLegId: { type: String, trim: true },
     fromNumber: String,
     toNumber: String,
+    virtualNumber: String,
+    customerNumber: String,
     webhookToken: { type: String, select: false },
     browserDialCode: { type: String, select: false },
     browserDialExpiresAt: { type: Date, select: false },
@@ -64,6 +72,7 @@ const callLogSchema = new mongoose.Schema(
     hangupCauseCode: String,
     answeredAt: Date,
     endedAt: Date,
+    missedNotificationSentAt: Date,
     aiSummary: String,
     aiQualityScore: Number,
     aiSentiment: {
@@ -85,7 +94,13 @@ const callLogSchema = new mongoose.Schema(
 callLogSchema.index({ lead: 1, leadModel: 1, callDatetime: -1 });
 callLogSchema.index({ calledBy: 1, callDatetime: -1 });
 callLogSchema.index({ providerCallId: 1 });
+callLogSchema.index(
+  { providerCallId: 1, direction: 1 },
+  { unique: true, partialFilterExpression: { direction: 'inbound', providerCallId: { $type: 'string' } } },
+);
 callLogSchema.index({ fromNumber: 1, callDatetime: -1 });
+callLogSchema.index({ virtualNumber: 1, callDatetime: -1 });
+callLogSchema.index({ direction: 1, calledBy: 1, callDatetime: -1 });
 
 const CallLog = mongoose.model('CallLog', callLogSchema);
 

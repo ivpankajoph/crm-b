@@ -106,27 +106,61 @@ test('company-only lead stats do not query customer records', { concurrency: fal
     companyCount: Company.countDocuments,
     historyAggregate: LeadStatusHistory.aggregate,
   };
+  let companyPipeline;
   try {
     Customer.aggregate = () => { throw new Error('Customer.aggregate must not run for company-only stats'); };
-    Company.aggregate = async () => [
-      { _id: 'Interested', count: 4 },
-      { _id: 'Follow Up', count: 2 },
-    ];
+    Company.aggregate = async (pipeline) => {
+      companyPipeline = pipeline;
+      return [{
+        totalLeads: 6,
+        demoScheduled: 1,
+        interested: 4,
+        notInterested: 0,
+        prospective: 0,
+        committed: 0,
+        converted: 0,
+        followUp: 2,
+      }];
+    };
     Company.countDocuments = async () => 1;
     LeadStatusHistory.aggregate = async () => [{ _id: 'Follow Up', count: 1 }];
 
-    const stats = await calculateLeadStatsAggregated(admin, { period: 'all', type: 'Company' });
+    const assignedTo = new mongoose.Types.ObjectId();
+    const stats = await calculateLeadStatsAggregated(
+      { _id: assignedTo, role: 'employee' },
+      { period: 'today', type: 'Company' },
+      { assignedTo },
+    );
     assert.equal(stats.totalLeads, 6);
     assert.equal(stats.interested, 4);
     assert.equal(stats.followUp, 2);
     assert.equal(stats.today.demoScheduled, 1);
     assert.equal(stats.today.followUp, 1);
+    assert.deepEqual(companyPipeline[0], { $match: { assignedTo } });
+    const pipelineText = JSON.stringify(companyPipeline);
+    assert.match(pipelineText, /\$scheduledDateTime/);
+    assert.match(pipelineText, /\$followUpDateTime/);
+    assert.match(pipelineText, /\$followTypeDate/);
   } finally {
     Customer.aggregate = originals.customerAggregate;
     Company.aggregate = originals.companyAggregate;
     Company.countDocuments = originals.companyCount;
     LeadStatusHistory.aggregate = originals.historyAggregate;
   }
+});
+
+test('lead date ranges use complete Asia Kolkata calendar days without mutating visibility', () => {
+  const assignedTo = new mongoose.Types.ObjectId();
+  const visibility = { assignedTo };
+  const match = buildLeadStatsMatch(
+    { _id: assignedTo, role: 'employee' },
+    { period: 'date', startDate: '2026-09-03', endDate: '2026-09-04' },
+    visibility,
+  );
+
+  assert.deepEqual(visibility, { assignedTo });
+  assert.equal(match.createdAt.$gte.toISOString(), '2026-09-02T18:30:00.000Z');
+  assert.equal(match.createdAt.$lt.toISOString(), '2026-09-04T18:30:00.000Z');
 });
 
 test('lead filter validation rejects incomplete committed values', () => {

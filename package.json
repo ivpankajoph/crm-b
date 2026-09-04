@@ -19,6 +19,7 @@
     "test:lead-status-email": "node --test src/services/tests/leadStatusEmailTemplate.test.js",
     "test:url-enrichment": "node --test src/services/tests/urlEnrichment.test.js",
     "test:call-transcription": "node --test src/services/tests/geminiCallTranscription.test.js",
+    "test:telephony-callbacks": "node --test src/services/tests/telephonyCallbacks.test.js",
     "test:access-control": "node --test src/services/tests/accessControl.test.js"
   },
   "keywords": [],

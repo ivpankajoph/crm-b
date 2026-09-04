@@ -12,6 +12,7 @@ import { getDownlineUserIds, isAdminUser } from '../utils/hierarchy.js';
 import { logActivity } from '../utils/activity.js';
 import { createPlivoBridge, prepareBrowserCall } from './telephonyController.js';
 import { normalizePhone } from '../services/plivoService.js';
+import { saveCallbackRoute } from '../services/callbackRoutingService.js';
 import { selectNextCallingNumber } from '../services/callingNumberPoolService.js';
 import { getCachedLeadStats } from '../services/leadStatsService.js';
 import { invalidateLeadMetricsCaches } from '../services/cacheService.js';
@@ -758,6 +759,8 @@ export const updateLeadFollowUp = async (req, res, next) => {
       });
     }
 
+    await invalidateLeadMetricsCaches();
+
     return successResponse(
       res,
       200,
@@ -1006,9 +1009,12 @@ export const startLeadCall = async (req, res, next) => {
       lead: lead._id,
       leadModel: type,
       calledBy: req.user._id,
+      direction: 'outbound',
       status: 'queued',
       fromNumber: callerId,
       toNumber: leadPhone,
+      virtualNumber: callerId,
+      customerNumber: leadPhone,
     });
     let providerResponse;
     try {
@@ -1020,6 +1026,7 @@ export const startLeadCall = async (req, res, next) => {
         callLog.status = 'ringing';
         await callLog.save();
       }
+      await saveCallbackRoute({ callLog });
     } catch (error) {
       callLog.status = 'failed';
       await callLog.save();

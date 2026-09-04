@@ -36,6 +36,10 @@ const settingSchema = new mongoose.Schema({
   plivoApplicationId: {
     type: String,
     default: ''
+  },
+  plivoInboundApplicationId: {
+    type: String,
+    default: ''
   }
 }, {
   timestamps: true

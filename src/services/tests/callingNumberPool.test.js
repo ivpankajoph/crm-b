@@ -51,7 +51,7 @@ test('active calling pool mutation is admin protected and call history supports 
 
   const controller = fs.readFileSync(new URL('../../controllers/telephonyController.js', import.meta.url), 'utf8');
   const leadController = fs.readFileSync(new URL('../../controllers/leadController.js', import.meta.url), 'utf8');
-  assert.match(controller, /filter\.fromNumber = fromNumber/);
+  assert.match(controller, /virtualNumber: fromNumber/);
   assert.match(controller, /CallLog\.distinct\('fromNumber'/);
   assert.match(leadController, /selectNextCallingNumber\(\)/);
 });
