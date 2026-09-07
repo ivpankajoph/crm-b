@@ -32,11 +32,20 @@ const STATUS_ALIASES = {
   demo_scheduled: 'Demo Scheduled',
   followup: 'Follow Up',
   follow_up: 'Follow Up',
-  prospective: 'Prospective',
   committed: 'Committed',
   converted: 'Converted',
   not_interested: 'Not Interested',
 };
+
+const LEAD_STATUSES = new Set([
+  'New',
+  'Demo Scheduled',
+  'Interested',
+  'Not Interested',
+  'Follow Up',
+  'Committed',
+  'Converted',
+]);
 
 const normalizeStatus = (status) => STATUS_ALIASES[status?.toString().trim().toLowerCase()] || status;
 
@@ -572,7 +581,9 @@ export const updateLeadStatus = async (req, res, next) => {
     const { status, scheduledDateTime, statusDate, details, comment } = req.body;
     const newStatus = normalizeStatus(status);
     const Model = getLeadModel(type);
-    if (!Model || !newStatus) return errorResponse(res, 400, 'Invalid lead type or status');
+    if (!Model || !LEAD_STATUSES.has(newStatus)) {
+      return errorResponse(res, 400, 'Invalid lead type or status');
+    }
 
     let statusChangedAt;
     try {

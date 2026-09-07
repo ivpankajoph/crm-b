@@ -144,7 +144,7 @@ export const getUserOptions = async (req, res, next) => {
       filter._id = { $in: await getAccountUserIds(ownerId) };
     }
     if (purpose === 'attendance') {
-      const visibility = await resolveUserDataScope(req.user, 'reports');
+      const visibility = await resolveUserDataScope(req.user, 'attendance');
       if (visibility.scope === 'none') filter._id = { $exists: false };
       if (visibility.scope !== 'all' && visibility.scope !== 'none') {
         filter._id = { $in: visibility.userIds };

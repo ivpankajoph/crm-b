@@ -3,6 +3,23 @@ import User from '../models/User.js';
 import Notification from '../models/Notification.js';
 import { successResponse, errorResponse } from '../utils/response.js';
 import { resolveUserDataScope } from '../services/dataScopeService.js';
+import {
+  attendanceTargetIsVisible,
+  statusFromAttendanceTimes,
+  withAttendanceMetrics,
+  withAttendanceMetricsMany,
+} from '../services/attendanceService.js';
+
+const ATTENDANCE_STATUSES = new Set(['Present', 'Absent', 'Half Day', 'On Leave']);
+
+const ensureVisibleAttendanceTarget = async (req, res, userId) => {
+  const visibility = await resolveUserDataScope(req.user, 'attendance', req.access);
+  if (!attendanceTargetIsVisible(visibility, userId)) {
+    errorResponse(res, 403, 'This employee is outside your attendance access');
+    return null;
+  }
+  return visibility;
+};
 
 // @desc    Mark attendance for a user (Admin only)
 // @route   POST /api/attendance
@@ -14,9 +31,14 @@ export const markAttendance = async (req, res, next) => {
     if (!userId || !date || !status) {
       return errorResponse(res, 400, 'User ID, date, and status are required');
     }
+    if (!ATTENDANCE_STATUSES.has(status)) {
+      return errorResponse(res, 400, 'Invalid attendance status');
+    }
 
     const attendanceDate = new Date(date);
     attendanceDate.setHours(0, 0, 0, 0);
+
+    if (!await ensureVisibleAttendanceTarget(req, res, userId)) return;
 
     const user = await User.findById(userId);
     if (!user) {
@@ -24,13 +46,32 @@ export const markAttendance = async (req, res, next) => {
     }
 
     const filter = { user: userId, date: attendanceDate };
-    const update = {
-      status,
-      checkIn: checkIn ? new Date(checkIn) : null,
-      checkOut: checkOut ? new Date(checkOut) : null,
-      notes,
-      markedBy: req.user._id
-    };
+    const update = { status, markedBy: req.user._id };
+    if (Object.hasOwn(req.body, 'checkIn')) update.checkIn = checkIn ? new Date(checkIn) : null;
+    if (Object.hasOwn(req.body, 'checkOut')) update.checkOut = checkOut ? new Date(checkOut) : null;
+    if (Object.hasOwn(req.body, 'notes')) update.notes = notes;
+
+    const effectiveCheckIn = Object.hasOwn(update, 'checkIn') ? update.checkIn : undefined;
+    const effectiveCheckOut = Object.hasOwn(update, 'checkOut') ? update.checkOut : undefined;
+    if ((effectiveCheckIn && Number.isNaN(effectiveCheckIn.getTime()))
+      || (effectiveCheckOut && Number.isNaN(effectiveCheckOut.getTime()))) {
+      return errorResponse(res, 400, 'Check-in and check-out must be valid dates');
+    }
+
+    if (effectiveCheckIn !== undefined || effectiveCheckOut !== undefined) {
+      const existing = await Attendance.findOne(filter).select('checkIn checkOut').lean();
+      const finalCheckIn = effectiveCheckIn !== undefined ? effectiveCheckIn : existing?.checkIn;
+      const finalCheckOut = effectiveCheckOut !== undefined ? effectiveCheckOut : existing?.checkOut;
+      if (finalCheckOut && !finalCheckIn) {
+        return errorResponse(res, 400, 'Check-in is required before check-out');
+      }
+      if (finalCheckIn && finalCheckOut && finalCheckOut < finalCheckIn) {
+        return errorResponse(res, 400, 'Check-out cannot be earlier than check-in');
+      }
+      if (finalCheckIn && finalCheckOut) {
+        update.status = statusFromAttendanceTimes(finalCheckIn, finalCheckOut);
+      }
+    }
 
     const attendance = await Attendance.findOneAndUpdate(
       filter,
@@ -38,7 +79,7 @@ export const markAttendance = async (req, res, next) => {
       { new: true, upsert: true }
     ).populate('user', 'name email');
 
-    return successResponse(res, 200, 'Attendance marked successfully', attendance);
+    return successResponse(res, 200, 'Attendance marked successfully', withAttendanceMetrics(attendance));
   } catch (error) {
     next(error);
   }
@@ -54,6 +95,9 @@ export const markSelfAttendance = async (req, res, next) => {
     if (!status) {
       return errorResponse(res, 400, 'Status is required');
     }
+    if (!ATTENDANCE_STATUSES.has(status)) {
+      return errorResponse(res, 400, 'Invalid attendance status');
+    }
 
     const attendanceDate = new Date();
     attendanceDate.setHours(0, 0, 0, 0);
@@ -62,17 +106,18 @@ export const markSelfAttendance = async (req, res, next) => {
     
     // Check if attendance already marked today
     const existing = await Attendance.findOne(filter);
+    if (existing) {
+      return errorResponse(res, 400, 'Attendance has already been marked for today. Request a change if it needs correction.');
+    }
     
     const update = {
       status,
       markedBy: req.user._id,
-      notes: (existing && existing.notes) ? existing.notes + ` | Self checked in as ${status}` : `Self checked in as ${status}`
+      notes: `Self checked in as ${status}`
     };
 
     if (status === 'Present' || status === 'Half Day') {
-      if (!existing || !existing.checkIn) {
-        update.checkIn = new Date();
-      }
+      update.checkIn = new Date();
     }
 
     const attendance = await Attendance.findOneAndUpdate(
@@ -81,7 +126,7 @@ export const markSelfAttendance = async (req, res, next) => {
       { new: true, upsert: true }
     ).populate('user', 'name email');
 
-    return successResponse(res, 200, 'Attendance marked successfully', attendance);
+    return successResponse(res, 200, 'Attendance marked successfully', withAttendanceMetrics(attendance));
   } catch (error) {
     next(error);
   }
@@ -106,14 +151,20 @@ export const selfCheckOut = async (req, res, next) => {
     if (existing.checkOut) {
       return errorResponse(res, 400, 'You have already checked out today.');
     }
+    if (!existing.checkIn) {
+      return errorResponse(res, 400, 'A check-in time is required before checking out.');
+    }
+
+    const checkedOutAt = new Date();
+    const calculatedStatus = statusFromAttendanceTimes(existing.checkIn, checkedOutAt);
 
     const attendance = await Attendance.findOneAndUpdate(
       filter,
-      { checkOut: new Date() },
+      { checkOut: checkedOutAt, status: calculatedStatus },
       { new: true }
     ).populate('user', 'name email');
 
-    return successResponse(res, 200, 'Checked out successfully', attendance);
+    return successResponse(res, 200, 'Checked out successfully', withAttendanceMetrics(attendance));
   } catch (error) {
     next(error);
   }
@@ -133,8 +184,17 @@ export const getDailyAttendance = async (req, res, next) => {
     const targetDate = new Date(date);
     targetDate.setHours(0, 0, 0, 0);
 
-    // Get all users (except admins maybe? Let's get all active users)
-    const users = await User.find({ isActive: true, role: { $ne: 'admin' } })
+    const visibility = await resolveUserDataScope(req.user, 'attendance', req.access);
+    const visibilityFilter = visibility.scope === 'all'
+      ? {}
+      : visibility.scope === 'none'
+        ? { _id: { $exists: false } }
+        : { _id: { $in: visibility.userIds } };
+    const users = await User.find({
+      ...visibilityFilter,
+      isActive: true,
+      role: { $not: /^admin$/i },
+    })
       .select('name email role')
       .lean();
     
@@ -146,7 +206,7 @@ export const getDailyAttendance = async (req, res, next) => {
 
     // Combine them
     const combinedData = users.map(user => {
-      const record = attendanceByUser.get(String(user._id));
+      const record = withAttendanceMetrics(attendanceByUser.get(String(user._id)));
       return {
         user,
         attendance: record || null
@@ -174,9 +234,9 @@ export const getMyAttendance = async (req, res, next) => {
       query.date = { $gte: startDate, $lte: endDate };
     }
 
-    const attendance = await Attendance.find(query).sort({ date: -1 });
+    const attendance = await Attendance.find(query).sort({ date: -1 }).lean();
 
-    return successResponse(res, 200, 'My attendance fetched', attendance);
+    return successResponse(res, 200, 'My attendance fetched', withAttendanceMetricsMany(attendance));
   } catch (error) {
     next(error);
   }
@@ -233,6 +293,7 @@ export const getUserAttendanceHistory = async (req, res, next) => {
   try {
     const { month, year } = req.query;
     const { userId } = req.params;
+    if (!await ensureVisibleAttendanceTarget(req, res, userId)) return;
     
     let query = { user: userId };
 
@@ -242,9 +303,9 @@ export const getUserAttendanceHistory = async (req, res, next) => {
       query.date = { $gte: startDate, $lte: endDate };
     }
 
-    const attendance = await Attendance.find(query).sort({ date: -1 });
+    const attendance = await Attendance.find(query).sort({ date: -1 }).lean();
 
-    return successResponse(res, 200, 'User attendance fetched', attendance);
+    return successResponse(res, 200, 'User attendance fetched', withAttendanceMetricsMany(attendance));
   } catch (error) {
     next(error);
   }
@@ -256,7 +317,7 @@ export const getUserAttendanceHistory = async (req, res, next) => {
 export const getAttendanceReport = async (req, res, next) => {
   try {
     const { startDate, endDate, userId } = req.query;
-    const visibility = await resolveUserDataScope(req.user, 'reports', req.access);
+    const visibility = await resolveUserDataScope(req.user, 'attendance', req.access);
     let query = visibility.scope === 'all'
       ? {}
       : visibility.scope === 'none'
@@ -275,7 +336,7 @@ export const getAttendanceReport = async (req, res, next) => {
         visibility.scope !== 'all'
         && !visibility.userIds.map(String).includes(String(userId))
       ) {
-        return errorResponse(res, 403, 'This employee is outside your report access');
+        return errorResponse(res, 403, 'This employee is outside your attendance access');
       }
       query.user = userId;
     }
@@ -285,7 +346,7 @@ export const getAttendanceReport = async (req, res, next) => {
       .sort({ date: -1 })
       .lean();
 
-    return successResponse(res, 200, 'Attendance report fetched successfully', attendance);
+    return successResponse(res, 200, 'Attendance report fetched successfully', withAttendanceMetricsMany(attendance));
   } catch (error) {
     next(error);
   }

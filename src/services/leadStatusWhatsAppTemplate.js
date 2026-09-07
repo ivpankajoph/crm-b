@@ -4,7 +4,6 @@ export const LEAD_STATUS_WHATSAPP_TEMPLATES = Object.freeze({
   New: 'lead_conversation_acknowledgement_v1',
   Interested: 'enquiry_requirement_recorded_v1',
   'Not Interested': 'enquiry_closure_confirmation_v1',
-  Prospective: 'enquiry_review_confirmation_v1',
   'Follow Up': 'followup_appointment_confirmation_v1',
   Committed: 'service_request_confirmation_v1',
   Converted: 'onboarding_process_confirmation_v1',
@@ -101,13 +100,6 @@ export const buildLeadStatusWhatsAppMessage = ({ leadType, lead, status }) => {
       break;
     case 'Not Interested':
       parameters = [companyName, reference];
-      break;
-    case 'Prospective':
-      parameters = [
-        companyName,
-        reference,
-        formatDate(details.expectedClosingDate) || 'To be confirmed',
-      ];
       break;
     case 'Follow Up':
       parameters = [

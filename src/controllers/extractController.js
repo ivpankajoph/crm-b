@@ -3,6 +3,7 @@ import { enrichCompanyWithGemini } from '../services/companyEnrichmentService.js
 import { scrapeWebsite } from '../services/urlScraperService.js';
 import { normalizeDomain, validatePublicUrl } from '../utils/urlSecurity.js';
 import { successResponse } from '../utils/response.js';
+import { toPublicUrlEnrichmentError } from '../services/urlEnrichmentErrorService.js';
 
 const EXTRACTOR_VERSION = 3;
 
@@ -41,10 +42,11 @@ export const enrichUrl = async (req, res, next) => {
       data,
     });
   } catch (error) {
-    if (error.code === 'ERR_BAD_RESPONSE' || error.code === 'ECONNABORTED') {
-      error.statusCode = 422;
-      error.message = 'The website could not be scanned within the allowed time';
-    }
-    next(error);
+    console.error('[Website import] Technical failure:', {
+      status: error.statusCode || error.status || error.response?.status,
+      code: error.code || error.response?.data?.error?.status,
+      message: error.message,
+    });
+    next(toPublicUrlEnrichmentError(error));
   }
 };

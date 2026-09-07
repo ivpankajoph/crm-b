@@ -6,6 +6,7 @@ import {
   LEGACY_PAGE_PERMISSION_MAP,
   PERMISSIONS,
   PERMISSION_VALUES,
+  PERMISSION_GROUPS,
   legacyPermissionsToGrants,
   sanitizeDataScopes,
   expandImpliedPermissions,
@@ -14,6 +15,11 @@ import {
   getAccountUserIds,
   userHasPermission,
 } from '../accessControlService.js';
+import {
+  attendanceTargetIsVisible,
+  statusFromAttendanceTimes,
+  withAttendanceMetrics,
+} from '../attendanceService.js';
 import Role from '../../models/Role.js';
 import User from '../../models/User.js';
 import Team from '../../models/Team.js';
@@ -103,6 +109,45 @@ test('action permissions include the page access required to use them', () => {
   assert.ok(grants.includes(PERMISSIONS.ATTENDANCE_VIEW));
   assert.ok(grants.includes(PERMISSIONS.EMAIL_MODULE_VIEW));
   assert.ok(grants.includes(PERMISSIONS.ADMIN_TEAMS_VIEW));
+});
+
+test('attendance permissions expose their own data scope', () => {
+  const attendanceGroup = PERMISSION_GROUPS.find((group) => group.id === 'attendance');
+  assert.equal(attendanceGroup?.supportsScope, true);
+  assert.deepEqual(
+    attendanceGroup?.permissions.map((permission) => permission.key),
+    [PERMISSIONS.ATTENDANCE_VIEW, PERMISSIONS.ATTENDANCE_MANAGE],
+  );
+  assert.deepEqual(
+    LEGACY_PAGE_PERMISSION_MAP['/reports/attendance'],
+    [PERMISSIONS.ATTENDANCE_VIEW],
+  );
+});
+
+test('attendance metrics and scoped targets are deterministic', () => {
+  const complete = withAttendanceMetrics({
+    checkIn: new Date('2026-09-07T03:30:00.000Z'),
+    checkOut: new Date('2026-09-07T12:05:00.000Z'),
+  });
+  assert.equal(complete.workedMinutes, 515);
+  assert.equal(complete.workedSeconds, 30_900);
+  assert.equal(complete.isOpenSession, false);
+  assert.equal(withAttendanceMetrics({ checkIn: new Date() }).isOpenSession, true);
+  assert.equal(attendanceTargetIsVisible({ scope: 'all', userIds: [] }, 'outside'), true);
+  assert.equal(attendanceTargetIsVisible({ scope: 'hierarchy', userIds: ['one'] }, 'one'), true);
+  assert.equal(attendanceTargetIsVisible({ scope: 'hierarchy', userIds: ['one'] }, 'two'), false);
+});
+
+test('attendance becomes present only after five hours', () => {
+  const checkIn = new Date('2026-09-07T04:30:00.000Z');
+  assert.equal(
+    statusFromAttendanceTimes(checkIn, new Date('2026-09-07T09:30:00.000Z')),
+    'Half Day',
+  );
+  assert.equal(
+    statusFromAttendanceTimes(checkIn, new Date('2026-09-07T09:30:01.000Z')),
+    'Present',
+  );
 });
 
 test('data scopes reject unsupported values', () => {

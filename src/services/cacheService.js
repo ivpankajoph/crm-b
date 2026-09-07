@@ -307,6 +307,8 @@ export const buildDashboardMetricsCacheKey = async ({
   userId,
   role,
   period,
+  startDate,
+  endDate,
   month,
   year,
   implementation = 'v2',
@@ -315,7 +317,7 @@ export const buildDashboardMetricsCacheKey = async ({
 }) => {
   const version = await getMetricsVersion();
   const visibilityHash = stableFiltersHash({ accessScope, visibleUserIds });
-  return `dashboard:metrics:v${version}:${implementation}:${userId}:${role}:${period}:${month || ''}:${year || ''}:${visibilityHash}`;
+  return `dashboard:metrics:v${version}:${implementation}:${userId}:${role}:${period}:${startDate || ''}:${endDate || ''}:${month || ''}:${year || ''}:${visibilityHash}`;
 };
 
 export const buildLeadStatsCacheKey = async ({ userId, role, filters }) => {

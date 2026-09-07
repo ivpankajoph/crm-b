@@ -127,11 +127,18 @@ export const PERMISSION_GROUPS = Object.freeze([
     ],
   },
   {
-    id: 'workforce',
-    label: 'Attendance & Calling',
+    id: 'attendance',
+    label: 'Attendance',
+    supportsScope: true,
     permissions: [
       { key: PERMISSIONS.ATTENDANCE_VIEW, label: 'View attendance' },
       { key: PERMISSIONS.ATTENDANCE_MANAGE, label: 'Manage attendance' },
+    ],
+  },
+  {
+    id: 'calling',
+    label: 'Calling',
+    permissions: [
       { key: PERMISSIONS.CALLS_VIEW, label: 'View calls' },
       { key: PERMISSIONS.CALLS_MANAGE, label: 'Manage calls' },
     ],
@@ -216,7 +223,7 @@ export const LEGACY_PAGE_PERMISSION_MAP = Object.freeze({
   '/calling': page(PERMISSIONS.CALLS_VIEW, PERMISSIONS.CALLS_MANAGE),
   '/reports': page(PERMISSIONS.REPORTS_VIEW),
   '/reports/users': page(PERMISSIONS.REPORTS_VIEW),
-  '/reports/attendance': page(PERMISSIONS.REPORTS_VIEW),
+  '/reports/attendance': page(PERMISSIONS.ATTENDANCE_VIEW),
   '/email-marketing': page(
     PERMISSIONS.EMAIL_MODULE_VIEW,
     PERMISSIONS.EMAIL_TEMPLATES_USE,

@@ -10,9 +10,9 @@ router.post('/', protect, requirePermission(PERMISSIONS.ATTENDANCE_MANAGE), mark
 router.post('/mark-self', protect, requirePermission(PERMISSIONS.ATTENDANCE_VIEW), markSelfAttendance);
 router.post('/checkout', protect, requirePermission(PERMISSIONS.ATTENDANCE_VIEW), selfCheckOut);
 router.post('/request-change', protect, requirePermission(PERMISSIONS.ATTENDANCE_VIEW), requestAttendanceChange);
-router.get('/report', protect, requirePermission(PERMISSIONS.REPORTS_VIEW), getAttendanceReport);
+router.get('/report', protect, requirePermission(PERMISSIONS.ATTENDANCE_VIEW), getAttendanceReport);
 router.get('/daily', protect, requirePermission(PERMISSIONS.ATTENDANCE_MANAGE), getDailyAttendance);
-router.get('/history/:userId', protect, requirePermission(PERMISSIONS.ATTENDANCE_MANAGE), getUserAttendanceHistory);
+router.get('/history/:userId', protect, requirePermission(PERMISSIONS.ATTENDANCE_VIEW), getUserAttendanceHistory);
 router.get('/my', protect, requirePermission(PERMISSIONS.ATTENDANCE_VIEW), getMyAttendance);
 
 export default router;

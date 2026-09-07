@@ -24,7 +24,6 @@ const STATUS_FIELDS = {
   'Demo Scheduled': ['demoDateTime', 'demoMode', 'meetingLink', 'location', 'reminder', 'note'],
   Interested: ['productService', 'expectedDecisionDate', 'note'],
   'Not Interested': ['reason', 'note'],
-  Prospective: ['requirement', 'estimatedDealValue', 'expectedClosingDate', 'note'],
   Committed: ['committedProductService', 'dealValue', 'expectedCompletionDate', 'note'],
   Converted: ['productService', 'finalDealValue', 'convertedAt', 'note'],
 };

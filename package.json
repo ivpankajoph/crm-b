@@ -10,6 +10,7 @@
     "db:indexes:part4": "node src/scripts/migratePart4Indexes.js",
     "db:indexes:url-cache": "node src/scripts/createUrlCacheIndexes.js",
     "maintenance:reconcile-employees": "node src/scripts/reconcileEmployees.js",
+    "maintenance:migrate-prospective-leads": "node src/scripts/migrateProspectiveLeads.js",
     "benchmark:part4": "node src/scripts/benchmarkPart4.js",
     "test:email-marketing": "node --test src/modules/email-marketing/tests/*.test.js",
     "test:part2": "node --test src/services/tests/part2Metrics.test.js",

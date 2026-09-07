@@ -9,7 +9,7 @@ import {
 } from './cacheService.js';
 import { resolveLeadVisibility } from './leadAccessService.js';
 
-const TRACKED_STATUSES = ['Demo Scheduled', 'Follow Up', 'Prospective', 'Committed', 'Converted', 'Not Interested'];
+const TRACKED_STATUSES = ['Demo Scheduled', 'Follow Up', 'Committed', 'Converted', 'Not Interested'];
 const INDIA_OFFSET = '+05:30';
 
 export const emptyLeadStats = () => ({
@@ -17,14 +17,12 @@ export const emptyLeadStats = () => ({
   demoScheduled: 0,
   interested: 0,
   notInterested: 0,
-  prospective: 0,
   committed: 0,
   converted: 0,
   followUp: 0,
   today: {
     demoScheduled: 0,
     followUp: 0,
-    prospective: 0,
     committed: 0,
     converted: 0,
     notInterested: 0,
@@ -100,7 +98,6 @@ const applyGroupedCounts = (result, grouped) => {
     'Demo Scheduled': 'demoScheduled',
     Interested: 'interested',
     'Not Interested': 'notInterested',
-    Prospective: 'prospective',
     Committed: 'committed',
     Converted: 'converted',
     'Follow Up': 'followUp',
@@ -123,19 +120,32 @@ const dateInRange = (dateExpression, range) => (
     : true
 );
 
-const companyPeriodStatsPipeline = (visibility, range) => {
+const companyStatusDateExpression = (status) => {
   const statusActivityDate = { $ifNull: ['$leadStatusChangedAt', '$createdAt'] };
-  const demoDate = {
-    $ifNull: [
-      '$scheduledDateTime',
-      { $ifNull: ['$statusDetails.demoDateTime', '$followTypeDate'] },
-    ],
-  };
-  const followUpDate = { $ifNull: ['$followUpDateTime', '$followTypeDate'] };
-  const statusCount = (status, dateExpression = statusActivityDate) => ({
+  if (status === 'Demo Scheduled') {
+    return {
+      $ifNull: [
+        '$scheduledDateTime',
+        { $ifNull: ['$statusDetails.demoDateTime', '$followTypeDate'] },
+      ],
+    };
+  }
+  if (status === 'Follow Up') return { $ifNull: ['$followUpDateTime', '$followTypeDate'] };
+  if (status === 'Converted') return { $ifNull: ['$statusDetails.convertedAt', statusActivityDate] };
+  return statusActivityDate;
+};
+
+export const buildCompanyStatusPeriodFilter = (status, filters) => {
+  if (!status || status === 'all' || !filters.period || filters.period === 'all') return {};
+  const range = rangeForFilters(filters);
+  return { $expr: dateInRange(companyStatusDateExpression(status), range) };
+};
+
+const companyPeriodStatsPipeline = (visibility, range) => {
+  const statusCount = (status) => ({
     $sum: {
       $cond: [
-        { $and: [{ $eq: ['$leadStatus', status] }, dateInRange(dateExpression, range)] },
+        { $and: [{ $eq: ['$leadStatus', status] }, dateInRange(companyStatusDateExpression(status), range)] },
         1,
         0,
       ],
@@ -148,13 +158,12 @@ const companyPeriodStatsPipeline = (visibility, range) => {
       $group: {
         _id: null,
         totalLeads: { $sum: 1 },
-        demoScheduled: statusCount('Demo Scheduled', demoDate),
-        followUp: statusCount('Follow Up', followUpDate),
+        demoScheduled: statusCount('Demo Scheduled'),
+        followUp: statusCount('Follow Up'),
         interested: statusCount('Interested'),
         notInterested: statusCount('Not Interested'),
-        prospective: statusCount('Prospective'),
         committed: statusCount('Committed'),
-        converted: statusCount('Converted', { $ifNull: ['$statusDetails.convertedAt', statusActivityDate] }),
+        converted: statusCount('Converted'),
       },
     },
   ];
@@ -202,7 +211,6 @@ export const calculateLeadStatsAggregated = async (user, filters, visibilityOver
     result.today.demoScheduled = todayDemo;
     const todayKey = {
       'Follow Up': 'followUp',
-      Prospective: 'prospective',
       Committed: 'committed',
       Converted: 'converted',
       'Not Interested': 'notInterested',
@@ -249,7 +257,6 @@ export const calculateLeadStatsAggregated = async (user, filters, visibilityOver
   result.today.demoScheduled = todayDemo[0] + todayDemo[1];
   const todayKey = {
     'Follow Up': 'followUp',
-    Prospective: 'prospective',
     Committed: 'committed',
     Converted: 'converted',
     'Not Interested': 'notInterested',
@@ -274,7 +281,7 @@ export const calculateLeadStatsLegacy = async (user, filters, visibilityOverride
       leadStatus: status,
       ...(periodRange ? { $expr: dateInRange(dateExpression, periodRange) } : {}),
     });
-    const [total, demoScheduled, interested, notInterested, prospective, committed, converted, followUp] = await Promise.all([
+    const [total, demoScheduled, interested, notInterested, committed, converted, followUp] = await Promise.all([
       Company.countDocuments(visibility),
       countStatus('Demo Scheduled', {
         $ifNull: [
@@ -284,7 +291,6 @@ export const calculateLeadStatsLegacy = async (user, filters, visibilityOverride
       }),
       countStatus('Interested'),
       countStatus('Not Interested'),
-      countStatus('Prospective'),
       countStatus('Committed'),
       countStatus('Converted', { $ifNull: ['$statusDetails.convertedAt', statusActivityDate] }),
       countStatus('Follow Up', { $ifNull: ['$followUpDateTime', '$followTypeDate'] }),
@@ -294,7 +300,6 @@ export const calculateLeadStatsLegacy = async (user, filters, visibilityOverride
       demoScheduled,
       interested,
       notInterested,
-      prospective,
       committed,
       converted,
       followUp,
@@ -311,14 +316,13 @@ export const calculateLeadStatsLegacy = async (user, filters, visibilityOverride
   const [customerCount, companyCount, ...statusCounts] = await Promise.all([
     Customer.countDocuments(matchStage),
     Company.countDocuments(matchStage),
-    ...['Demo Scheduled', 'Interested', 'Not Interested', 'Prospective', 'Committed', 'Converted', 'Follow Up'].map(countByStatus),
+    ...['Demo Scheduled', 'Interested', 'Not Interested', 'Committed', 'Converted', 'Follow Up'].map(countByStatus),
   ]);
   result.totalLeads = customerCount + companyCount;
   [
     'demoScheduled',
     'interested',
     'notInterested',
-    'prospective',
     'committed',
     'converted',
     'followUp',
@@ -342,7 +346,6 @@ export const calculateLeadStatsLegacy = async (user, filters, visibilityOverride
   result.today.demoScheduled = todayDemo[0] + todayDemo[1];
   const todayKey = {
     'Follow Up': 'followUp',
-    Prospective: 'prospective',
     Committed: 'committed',
     Converted: 'converted',
     'Not Interested': 'notInterested',
@@ -374,7 +377,7 @@ export const getCachedLeadStats = async (user, filters) => {
   return {
     ...result,
     queryCount: filters.type === 'Company'
-      ? (useAggregation ? 3 : 8)
-      : (useAggregation ? 5 : 23),
+      ? (useAggregation ? 3 : 7)
+      : (useAggregation ? 5 : 21),
   };
 };

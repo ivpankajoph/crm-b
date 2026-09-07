@@ -10,6 +10,7 @@ import { userHasPermission } from '../services/accessControlService.js';
 import { PERMISSIONS } from '../constants/permissions.js';
 import { sendAutomatedLeadStatusNotifications } from '../services/leadStatusNotificationService.js';
 import { parseStatusDetails } from '../utils/statusDetails.js';
+import { buildCompanyStatusPeriodFilter } from '../services/leadStatsService.js';
 
 const normalizeAssignees = (assignedTo) => {
   if (!assignedTo) return [];
@@ -52,7 +53,10 @@ export const getCompaniesPaged = async (req, res, next) => {
         { city: pattern },
       ];
     }
-    if (req.query.status && req.query.status !== 'all') filter.leadStatus = req.query.status;
+    if (req.query.status && req.query.status !== 'all') {
+      filter.leadStatus = req.query.status;
+      Object.assign(filter, buildCompanyStatusPeriodFilter(req.query.status, req.query));
+    }
     if (req.query.city && req.query.city !== 'all') filter.city = req.query.city;
 
     const [items, total, cities] = await Promise.all([

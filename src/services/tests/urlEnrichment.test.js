@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import UrlCache from '../../models/UrlCache.js';
 import { normalizeEnrichmentData } from '../companyEnrichmentService.js';
 import { extractStaticPage } from '../urlScraperService.js';
+import { toPublicUrlEnrichmentError } from '../urlEnrichmentErrorService.js';
 import {
   isPublicIpAddress,
   normalizeDomain,
@@ -97,4 +98,36 @@ test('tiered scraper includes retryable network failures before Puppeteer fallba
   assert.match(scraper, /ECONNABORTED/);
   assert.match(scraper, /ERR_NETWORK/);
   assert.match(scraper, /scrapeWithPuppeteer\(staticResult\?\.finalUrl \|\| websiteUrl\)/);
+});
+
+test('URL enrichment hides provider errors behind user-friendly messages', () => {
+  const permissionError = toPublicUrlEnrichmentError(Object.assign(
+    new Error('{"error":{"code":403,"message":"Lightning dunning decision is deny"}}'),
+    { status: 403 },
+  ));
+  assert.equal(permissionError.statusCode, 503);
+  assert.match(permissionError.message, /temporarily unavailable/i);
+  assert.doesNotMatch(permissionError.message, /Gemini|dunning|403|project/i);
+
+  const retiredModelError = toPublicUrlEnrichmentError(Object.assign(
+    new Error('This model is no longer available'),
+    { status: 404 },
+  ));
+  assert.equal(retiredModelError.statusCode, 503);
+  assert.doesNotMatch(retiredModelError.message, /model|404/i);
+});
+
+test('URL enrichment keeps validation useful and maps busy or unreachable services', () => {
+  assert.equal(
+    toPublicUrlEnrichmentError(Object.assign(new Error('Enter a valid website URL'), { statusCode: 400 })).message,
+    'Enter a valid website URL',
+  );
+  assert.match(
+    toPublicUrlEnrichmentError(Object.assign(new Error('quota exceeded'), { status: 429 })).message,
+    /currently busy/i,
+  );
+  assert.match(
+    toPublicUrlEnrichmentError(Object.assign(new Error('timeout'), { code: 'ECONNABORTED' })).message,
+    /could not access/i,
+  );
 });

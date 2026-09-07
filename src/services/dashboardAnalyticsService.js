@@ -49,7 +49,7 @@ export const getDashboardAnalytics = async (user, access) => {
       {
         $match: {
           changedBy: { $in: leadUserIds },
-          newStatus: { $in: ['Demo Scheduled', 'Follow Up', 'Prospective', 'Committed', 'Converted', 'Not Interested'] },
+          newStatus: { $in: ['Demo Scheduled', 'Follow Up', 'Committed', 'Converted', 'Not Interested'] },
         },
       },
       {

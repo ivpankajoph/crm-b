@@ -40,7 +40,7 @@ const creatorFilter = (visibleUserIds) => (
 );
 
 const INDIA_OFFSET = '+05:30';
-const PIPELINE_STATUSES = ['New', 'Follow Up', 'Interested', 'Demo Scheduled', 'Prospective', 'Committed', 'Converted', 'Not Interested'];
+const PIPELINE_STATUSES = ['New', 'Follow Up', 'Interested', 'Demo Scheduled', 'Committed', 'Converted', 'Not Interested'];
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 const indiaDateString = (date = new Date()) => {
@@ -166,7 +166,7 @@ export const getDashboardReport = async (req, res) => {
       Company.countDocuments(companyPeriodFilter),
       Company.countDocuments(convertedFilter),
       Company.aggregate([
-        { $match: { ...companyPeriodFilter, leadStatus: { $in: ['Prospective', 'Committed'] } } },
+        { $match: { ...companyPeriodFilter, leadStatus: { $in: ['Interested', 'Committed'] } } },
         { $group: { _id: null, total: { $sum: { $ifNull: ['$statusDetails.dealValue', { $ifNull: ['$statusDetails.estimatedDealValue', 0] }] } } } },
       ]),
       Company.aggregate([

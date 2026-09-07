@@ -8,7 +8,6 @@ export const LEAD_STATUS_EMAIL_THEMES = Object.freeze({
   'Demo Scheduled': { primary: '#0891b2', soft: '#ecfeff', heading: 'Your Demo Is Scheduled', subtitle: 'Here are the details agreed during our conversation.' },
   Interested: { primary: '#059669', soft: '#ecfdf5', heading: 'Thank You for Your Interest!', subtitle: 'We are pleased to continue the conversation.' },
   'Not Interested': { primary: '#dc2626', soft: '#fef2f2', heading: 'Thank You for Your Time', subtitle: 'We appreciate the opportunity to speak with you.' },
-  Prospective: { primary: '#7c3aed', soft: '#f5f3ff', heading: 'Let’s Take This Forward', subtitle: 'Your requirements and next steps have been noted.' },
   'Follow Up': { primary: '#d97706', soft: '#fffbeb', heading: 'Follow-Up Scheduled', subtitle: 'This confirms our next conversation.' },
   Committed: { primary: '#1d4ed8', soft: '#eef2ff', heading: 'Thank You for Choosing Us!', subtitle: 'We are ready to move forward together.' },
   Converted: { primary: '#047857', soft: '#ecfdf5', heading: 'Welcome to Sellerslogin!', subtitle: 'We are delighted to have you with us.' },
@@ -93,11 +92,6 @@ const copyForStatus = (status) => {
       'As discussed, we understand that you do not wish to proceed with our solution at this time. We respect your decision and appreciate the opportunity to present our services to you.',
       'If your requirements change in the future, we would be pleased to assist you.',
     ],
-    Prospective: [
-      'Thank you for the detailed discussion regarding your business requirements.',
-      'Based on our conversation, we believe there is a potential fit between your requirements and our solution. We have recorded the points discussed and will proceed according to the mutually agreed next steps.',
-      'We appreciate your consideration and look forward to taking the discussion forward.',
-    ],
     'Follow Up': [
       'Thank you for speaking with us. As discussed, we have scheduled a follow-up conversation to continue our discussion regarding your requirements.',
       'During the follow-up, we will continue from the points discussed and address any further questions or requirements.',
@@ -123,7 +117,6 @@ const subjectForStatus = (status, companyName, demoMode) => {
     'Demo Scheduled': `${demoMode === 'On-site' ? 'On-Site Demo' : demoMode === 'Online' ? 'Online Demo' : 'Demo'} Confirmation – ${companyName}`,
     Interested: `Thank You for Confirming Your Interest – ${companyName}`,
     'Not Interested': `Thank You for Your Time – ${companyName}`,
-    Prospective: `Confirmation of Our Discussion – ${companyName}`,
     'Follow Up': `Follow-Up Confirmation – ${companyName}`,
     Committed: `Confirmation of Your Decision to Proceed – ${companyName}`,
     Converted: `Welcome to Sellerslogin – ${companyName}`,
@@ -149,13 +142,6 @@ const detailRowsForStatus = (status, lead, timezone) => {
     return [
       ['Product / Service', leadValue(lead, 'productService')],
       ['Expected Decision Date', formatDate(leadValue(lead, 'expectedDecisionDate'), timezone)],
-    ];
-  }
-  if (status === 'Prospective') {
-    return [
-      ['Requirement', leadValue(lead, 'requirement')],
-      ['Estimated Deal Value', formatMoney(leadValue(lead, 'estimatedDealValue'))],
-      ['Expected Closing Date', formatDate(leadValue(lead, 'expectedClosingDate'), timezone)],
     ];
   }
   if (status === 'Committed') {

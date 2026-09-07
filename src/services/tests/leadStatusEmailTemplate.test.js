@@ -20,7 +20,7 @@ const baseLead = {
 
 test('every supported lead status renders a distinct branded HTML theme', () => {
   const statuses = Object.keys(LEAD_STATUS_EMAIL_THEMES);
-  assert.equal(statuses.length, 8);
+  assert.equal(statuses.length, 7);
   assert.equal(new Set(statuses.map((status) => LEAD_STATUS_EMAIL_THEMES[status].primary)).size, statuses.length);
 
   for (const status of statuses) {
@@ -93,7 +93,6 @@ test('approved WhatsApp templates map to every lead status and both demo modes',
     ['New', {}, 'lead_conversation_acknowledgement_v1', 1],
     ['Interested', { productService: 'CRM Software' }, 'enquiry_requirement_recorded_v1', 3],
     ['Not Interested', {}, 'enquiry_closure_confirmation_v1', 2],
-    ['Prospective', { expectedClosingDate: '2026-08-20T00:00:00.000Z' }, 'enquiry_review_confirmation_v1', 3],
     ['Follow Up', {}, 'followup_appointment_confirmation_v1', 3],
     ['Committed', { committedProductService: 'CRM Software', expectedCompletionDate: '2026-08-30T00:00:00.000Z' }, 'service_request_confirmation_v1', 4],
     ['Converted', { productService: 'CRM Software', convertedAt: '2026-09-01T00:00:00.000Z' }, 'onboarding_process_confirmation_v1', 4],

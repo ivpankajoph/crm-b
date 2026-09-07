@@ -3,9 +3,15 @@ import assert from 'node:assert/strict';
 import mongoose from 'mongoose';
 import Customer from '../../models/Customer.js';
 import Company from '../../models/Company.js';
+import Lead from '../../models/Lead.js';
 import LeadStatusHistory from '../../models/LeadStatusHistory.js';
-import { calculateDashboardMetricsAggregated } from '../dashboardMetricsService.js';
-import { buildLeadStatsMatch, calculateLeadStatsAggregated, calculateLeadStatsLegacy } from '../leadStatsService.js';
+import { buildDashboardMetricMatch, calculateDashboardMetricsAggregated } from '../dashboardMetricsService.js';
+import {
+  buildCompanyStatusPeriodFilter,
+  buildLeadStatsMatch,
+  calculateLeadStatsAggregated,
+  calculateLeadStatsLegacy,
+} from '../leadStatsService.js';
 import {
   getCacheMetrics,
   getCachedJsonMany,
@@ -18,9 +24,16 @@ const admin = {
   role: 'admin',
 };
 
+test('lead schemas reject the retired Prospective status', () => {
+  assert.equal(Company.schema.path('leadStatus').enumValues.includes('Prospective'), false);
+  assert.equal(Customer.schema.path('leadStatus').enumValues.includes('Prospective'), false);
+  assert.equal(Lead.schema.path('status').enumValues.includes('Prospective'), false);
+});
+
 test('dashboard aggregation preserves status mapping and null-as-New', { concurrency: false }, async () => {
   const originalCustomerAggregate = Customer.aggregate;
   const originalCompanyAggregate = Company.aggregate;
+  const originalCompanyCount = Company.countDocuments;
   try {
     Customer.aggregate = async () => [
       { _id: null, count: 2 },
@@ -30,14 +43,18 @@ test('dashboard aggregation preserves status mapping and null-as-New', { concurr
       { _id: 'New', count: 4 },
       { _id: 'Converted', count: 1 },
     ];
+    Company.countDocuments = async (query) => {
+      assert.equal(query.createdAt, undefined);
+      return 7;
+    };
 
-    const metrics = await calculateDashboardMetricsAggregated(admin, { period: 'all' });
+    const metrics = await calculateDashboardMetricsAggregated(admin, { period: 'today' });
     assert.deepEqual(metrics, {
+      totalCompanyLeads: 7,
       new: 6,
       demoScheduled: 0,
       interested: 3,
       notInterested: 0,
-      prospective: 0,
       committed: 0,
       converted: 1,
       followUp: 0,
@@ -45,7 +62,25 @@ test('dashboard aggregation preserves status mapping and null-as-New', { concurr
   } finally {
     Customer.aggregate = originalCustomerAggregate;
     Company.aggregate = originalCompanyAggregate;
+    Company.countDocuments = originalCompanyCount;
   }
+});
+
+test('dashboard custom date range uses complete Asia Kolkata calendar days', () => {
+  const visibility = { assignedTo: admin._id };
+  const match = buildDashboardMetricMatch(
+    admin,
+    { period: 'date', startDate: '2026-09-03', endDate: '2026-09-04' },
+    visibility,
+  );
+
+  assert.deepEqual(visibility, { assignedTo: admin._id });
+  assert.equal(match.createdAt.$gte.toISOString(), '2026-09-02T18:30:00.000Z');
+  assert.equal(match.createdAt.$lt.toISOString(), '2026-09-04T18:30:00.000Z');
+  assert.throws(
+    () => buildDashboardMetricMatch(admin, { period: 'date', startDate: '2026-09-04', endDate: '2026-09-03' }),
+    /cannot be after/,
+  );
 });
 
 test('lead aggregation uses grouped counts and lookup visibility without loading ID arrays', { concurrency: false }, async () => {
@@ -116,7 +151,6 @@ test('company-only lead stats do not query customer records', { concurrency: fal
         demoScheduled: 1,
         interested: 4,
         notInterested: 0,
-        prospective: 0,
         committed: 0,
         converted: 0,
         followUp: 2,
@@ -186,6 +220,23 @@ test('lead date ranges use complete Asia Kolkata calendar days without mutating 
   assert.deepEqual(visibility, { assignedTo });
   assert.equal(match.createdAt.$gte.toISOString(), '2026-09-02T18:30:00.000Z');
   assert.equal(match.createdAt.$lt.toISOString(), '2026-09-04T18:30:00.000Z');
+});
+
+test('company list status filters use the same date fields as metric cards', () => {
+  const filters = { period: 'date', startDate: '2026-09-26', endDate: '2026-09-26' };
+  const followUp = JSON.stringify(buildCompanyStatusPeriodFilter('Follow Up', filters));
+  const demo = JSON.stringify(buildCompanyStatusPeriodFilter('Demo Scheduled', filters));
+  const interested = JSON.stringify(buildCompanyStatusPeriodFilter('Interested', filters));
+  const converted = JSON.stringify(buildCompanyStatusPeriodFilter('Converted', filters));
+
+  assert.match(followUp, /\$followUpDateTime/);
+  assert.match(followUp, /\$followTypeDate/);
+  assert.match(demo, /\$scheduledDateTime/);
+  assert.match(demo, /\$statusDetails\.demoDateTime/);
+  assert.match(interested, /\$leadStatusChangedAt/);
+  assert.match(converted, /\$statusDetails\.convertedAt/);
+  assert.deepEqual(buildCompanyStatusPeriodFilter('all', filters), {});
+  assert.deepEqual(buildCompanyStatusPeriodFilter('Follow Up', { period: 'all' }), {});
 });
 
 test('lead filter validation rejects incomplete committed values', () => {

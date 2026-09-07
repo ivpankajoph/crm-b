@@ -122,7 +122,7 @@ export const getSalesReportData = async (query = {}) => {
         _id: null,
         newLeads: { $sum: 1 },
         activeDeals: { $sum: { $cond: [{ $not: [{ $in: ['$leadStatus', ['Converted', 'Not Interested']] }] }, 1, 0] } },
-        pipelineValue: { $sum: { $cond: [{ $in: ['$leadStatus', ['Prospective', 'Committed']] }, dealValueExpression, 0] } },
+        pipelineValue: { $sum: { $cond: [{ $in: ['$leadStatus', ['Interested', 'Committed']] }, dealValueExpression, 0] } },
         convertedCustomers: { $sum: { $cond: [{ $eq: ['$leadStatus', 'Converted'] }, 1, 0] } },
         wonRevenue: { $sum: { $cond: [{ $eq: ['$leadStatus', 'Converted'] }, { $ifNull: ['$statusDetails.finalDealValue', 0] }, 0] } },
       } },
@@ -157,7 +157,7 @@ export const getSalesReportData = async (query = {}) => {
   metrics.conversionRate = metrics.newLeads ? Number(((metrics.convertedCustomers / metrics.newLeads) * 100).toFixed(1)) : 0;
   metrics.averageDealValue = metrics.convertedCustomers ? Math.round(metrics.wonRevenue / metrics.convertedCustomers) : 0;
   const pipelineMap = new Map(pipelineRows.map((row) => [row._id, row.count]));
-  const statuses = ['New', 'Follow Up', 'Interested', 'Demo Scheduled', 'Prospective', 'Committed', 'Converted', 'Not Interested'];
+  const statuses = ['New', 'Follow Up', 'Interested', 'Demo Scheduled', 'Committed', 'Converted', 'Not Interested'];
   return {
     items: result.items || [],
     pagination: paginationMeta({ page, limit, total }),

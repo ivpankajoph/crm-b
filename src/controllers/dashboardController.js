@@ -16,6 +16,8 @@ export const getDashboardMetricsOnly = async (req, res, next) => {
   try {
     const filters = {
       period: req.query.period || 'today',
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
       month: req.query.month,
       year: req.query.year,
     };
@@ -36,6 +38,8 @@ export const getDashboardStats = async (req, res, next) => {
   try {
     const filters = {
       period: req.query.period || 'today',
+      startDate: req.query.startDate,
+      endDate: req.query.endDate,
       month: req.query.month,
       year: req.query.year,
     };
